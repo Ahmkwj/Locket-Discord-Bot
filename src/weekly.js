@@ -46,9 +46,8 @@ const CHECK_INTERVAL_MS = 5 * 60 * 1000;
 async function tickWeekly(client, config, data, saveConfig) {
   if (!config.weeklyEnabled) return;
 
-  const { watchChannelId, notifyChannelId, intervalDays, lastAnnouncedAt } =
-    config;
-  if (!watchChannelId || !notifyChannelId) return;
+  const { watchChannelId, intervalDays, lastAnnouncedAt } = config;
+  if (!watchChannelId) return;
 
   const now = Date.now();
   const intervalMs = intervalDays * 24 * 60 * 60 * 1000;
@@ -82,15 +81,15 @@ async function tickWeekly(client, config, data, saveConfig) {
     }
   }
 
-  // ── Fetch notify channel ─────────────────────────────────────────────────
-  const notifyChannel = await client.channels
-    .fetch(notifyChannelId)
+  // ── Fetch watch channel (announcements go here) ──────────────────────────
+  const announceChannel = await client.channels
+    .fetch(watchChannelId)
     .catch(() => null);
-  if (!notifyChannel) return;
+  if (!announceChannel) return;
 
   // ── No winner ─────────────────────────────────────────────────────────────
   if (!winnerMeta || winnerCount === 0) {
-    await notifyChannel
+    await announceChannel
       .send(
         `📷 **لا يوجد فائز هذه الفترة.**\n` +
           `لم تُسجَّل أي تفاعلات على الصور. استمروا في النشر والتفاعل! 🌟`,
@@ -138,11 +137,11 @@ async function tickWeekly(client, config, data, saveConfig) {
     `@here`,
   ].join("\n");
 
-  await notifyChannel.send(text).catch(() => null);
+  await announceChannel.send(text).catch(() => null);
 
   // Send the photo after the text so it renders as a clean preview below.
   if (imageUrl) {
-    await notifyChannel.send(imageUrl).catch(() => null);
+    await announceChannel.send(imageUrl).catch(() => null);
   }
 }
 

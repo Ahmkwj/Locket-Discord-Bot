@@ -219,11 +219,9 @@ async function syncChannel(channel, data, config) {
   );
 
   const userCount = Object.keys(ch.users).length;
-  const mode = isIncremental ? "تحديث" : "مزامنة كاملة";
   await channel
     .send(
-      `\u2705 **${mode} انتهت.**\n` +
-        `تمت معالجة ${processed} رسالة، ${userCount} مستخدم في التتبع.`,
+      `تمت مزامنة القناة. تمت معالجة **${processed}** رسالة و **${userCount}** متفاعل.`,
     )
     .catch(() => null);
 }

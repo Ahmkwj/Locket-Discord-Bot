@@ -6,6 +6,8 @@
 
 "use strict";
 
+require("dotenv").config();
+
 /**
  * Locket Discord Bot — main entry point
  *

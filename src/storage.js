@@ -93,13 +93,15 @@ const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000; // prune at most once per 6 h
 function validateConfig(raw) {
   if (!raw || typeof raw !== "object")
     throw new TypeError("config.json must be a JSON object");
-  if (typeof raw.token !== "string" || !raw.token.trim())
-    throw new TypeError("config.json: `token` must be a non-empty string");
+  const token =
+    (typeof raw.token === "string" && raw.token.trim()) || process.env.DISCORD_TOKEN;
+  if (!token || !token.trim())
+    throw new TypeError("DISCORD_TOKEN must be set in .env or config.json");
   if (typeof raw.ownerId !== "string" || !raw.ownerId.trim())
     throw new TypeError("config.json: `ownerId` must be a non-empty string");
 
   return {
-    token: raw.token.trim(),
+    token: token.trim(),
     ownerId: raw.ownerId.trim(),
     modIds: Array.isArray(raw.modIds)
       ? raw.modIds.filter((id) => typeof id === "string" && id.trim())
@@ -134,7 +136,9 @@ function loadConfig() {
 }
 
 function saveConfig(cfg) {
-  atomicWrite(CONFIG_PATH, JSON.stringify(cfg, null, 2));
+  const toSave = { ...cfg };
+  delete toSave.token;
+  atomicWrite(CONFIG_PATH, JSON.stringify(toSave, null, 2));
 }
 
 // ─────────────────────────────────────────────

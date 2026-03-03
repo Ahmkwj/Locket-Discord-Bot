@@ -265,9 +265,15 @@ function migrate(raw) {
 
 function loadData() {
   try {
-    return migrate(JSON.parse(fs.readFileSync(DATA_PATH, "utf8")));
+    const raw = fs.readFileSync(DATA_PATH, "utf8");
+    if (!raw || !raw.trim()) throw new Error("empty file");
+    return migrate(JSON.parse(raw));
   } catch {
-    return { channels: {} };
+    const defaultData = { channels: {} };
+    try {
+      atomicWrite(DATA_PATH, JSON.stringify(defaultData, null, 2));
+    } catch (_) {}
+    return defaultData;
   }
 }
 

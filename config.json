@@ -1,0 +1,16 @@
+{
+  "token": "MTQ3ODE4Mzc3MzI1MzQwMjczNg.GZk-_H.obRI2F8wwRhi0q-EryuabgDF5ulnn-tOxMjuBo",
+  "ownerId": "775650520508661781",
+  "modIds": ["861797280143114240"],
+  "watchChannelId": "1475957030555746422",
+  "notifyChannelId": "1439028157696184421",
+  "reactionThreshold": 100,
+  "speedBonusMinutes": 60,
+  "intervalDays": 7,
+  "retentionDays": 30,
+  "weeklyEnabled": true,
+  "duplicateCheckEnabled": true,
+  "speedBonusEnabled": true,
+  "goalNotifyEnabled": true,
+  "leaderboardEnabled": true
+}

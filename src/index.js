@@ -1,29 +1,20 @@
-/**
- • Name: Ahmed Khawaja  
- • Student ID: 60104808  
- • Created On 03-03-2026-06h-43m
-*/
-
 "use strict";
 
 require("dotenv").config();
 
 /**
- * Locket Discord Bot — main entry point
+ * index.js — entry point
  *
- * Required bot permissions (integer 395137336384):
- *   View Channels | Read Message History | Send Messages
- *   Manage Messages | Add Reactions | Use External Emojis
- *
- * Required gateway intents:
+ * Gateway intents required:
  *   Guilds | GuildMessages | MessageContent | GuildMessageReactions
  *
  * Developer Portal — enable both:
  *   ✅  Message Content Intent
  *   ✅  Server Members Intent
  *
- * Only command:  setlocket  (owner or mods only)
- *   Opens the full settings & dashboard panel.
+ * Invite integer: 395137336384
+ *
+ * Admin trigger: type  setlocket  in any channel the bot can see.
  */
 
 const { Client, GatewayIntentBits, Partials } = require("discord.js");
@@ -55,10 +46,12 @@ let config;
 try {
   config = loadConfig();
 } catch (err) {
-  console.error("[boot] FATAL — could not load config.json:", err.message);
+  console.error("[boot] FATAL — could not load config:", err.message);
   process.exit(1);
 }
 
+// data is loaded once and mutated in-place throughout the process lifetime.
+// Every module that writes data calls saveData(data) after mutating.
 const data = loadData();
 console.log("[boot] config and data loaded");
 
@@ -83,14 +76,16 @@ const client = new Client({
 client.once("ready", async () => {
   console.log(`[boot] logged in as ${client.user.tag}`);
 
-  // Startup sync (full or incremental) for watch channel
   if (config.watchChannelId) {
     const ch = await client.channels
       .fetch(config.watchChannelId)
       .catch(() => null);
     if (ch) {
       console.log(`[boot] starting startup sync for #${ch.name}`);
-      syncChannel(ch, data, config).catch((e) => console.error("[sync]", e));
+      // Fire-and-forget — errors are caught inside syncChannel
+      syncChannel(ch, data, config).catch((err) =>
+        console.error("[sync]", err),
+      );
     } else {
       console.warn(
         `[boot] could not fetch watch channel ${config.watchChannelId}`,
@@ -98,7 +93,7 @@ client.once("ready", async () => {
     }
   } else {
     console.log(
-      "[boot] no watch channel configured — send setlocket to set one up",
+      "[boot] no watch channel configured — type setlocket to set one up",
     );
   }
 
@@ -125,24 +120,22 @@ client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
 
-    const { watchChannelId } = config;
     const isWatchChannel =
-      watchChannelId && message.channel.id === watchChannelId;
+      config.watchChannelId && message.channel.id === config.watchChannelId;
 
-    // ── Duplicate photo guard ─────────────────────────────────────────────────
+    // ── Duplicate photo guard ──────────────────────────────────────────────
     if (isWatchChannel && message.attachments.size > 0) {
       if (checkDuplicatePhoto(message, config, data, saveData)) {
         await handleDuplicatePhoto(message, client, config);
-        return;
+        return; // Don't process this message further
       }
       registerPhotoSignatures(message, config, data, saveData);
     }
 
-    // ── Command gate — only allowed users ────────────────────────────────────
+    // ── Admin commands ─────────────────────────────────────────────────────
     if (!isAllowed(config, message.author.id)) return;
 
     const cmd = message.content.trim().toLowerCase();
-
     if (cmd === "setlocket") {
       await handleSettingsCommand(message, config);
     }
@@ -169,10 +162,11 @@ client.on("interactionCreate", async (interaction) => {
     }
   } catch (err) {
     console.error("[event:interaction]", err);
+    // Reply with an error if we haven't already
     if (!interaction.replied && !interaction.deferred) {
       await interaction
         .reply({
-          content: "❌ حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.",
+          content: "❌ حدث خطأ غير متوقع، يرجى المحاولة مرة أخرى.",
           ephemeral: false,
         })
         .catch(() => null);

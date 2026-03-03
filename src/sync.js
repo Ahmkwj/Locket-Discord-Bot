@@ -1,30 +1,23 @@
-/**
- • Name: Ahmed Khawaja  
- • Student ID: 60104808  
- • Created On 03-03-2026-06h-43m
-*/
-
 "use strict";
 
 /**
  * sync.js — channel sync engine
  *
- * For each message:
+ * For each message in the watch channel:
  *   1. Register photo signatures (duplicate guard).
- *   2. Store imageUrl (first image attachment) for the weekly announcement.
- *   3. Collect unique reactor IDs across ALL emoji into meta.reactorIds.
- *   4. Credit each unique reactor once on their personal leaderboard.
+ *   2. Store imageUrl (first image attachment) for the best-photo announcement.
+ *   3. Collect unique human reactor IDs across ALL emoji → meta.reactorIds.
+ *   4. Credit each unique reactor once on their leaderboard (1 pt for historical sync).
  *
- * Per-message skip optimisation:
- *   If meta.syncedAt > 0 the reactor list was already fetched for this message.
- *   We skip re-fetching unless the message is still within the speed-bonus window
- *   (new reactions may still be arriving).
- *
- * Snowflake → ms: (BigInt(id) >> 22n) + 1_420_070_400_000n
+ * Skip optimisation:
+ *   If meta.syncedAt > 0 the message has been fully processed.
+ *   We re-process only if it is still inside the speed-bonus window
+ *   (fresh reactions may still be arriving and need accurate point allocation).
  */
 
 const { Routes } = require("discord-api-types/v10");
 const { makeURLSearchParams } = require("@discordjs/rest");
+
 const {
   getChannel,
   getUser,
@@ -40,12 +33,11 @@ const {
 } = require("./photoUtils");
 
 // ─────────────────────────────────────────────
-// Snowflake util
+// Snowflake → unix-ms
 // ─────────────────────────────────────────────
 
 const DISCORD_EPOCH = 1_420_070_400_000n;
 
-/** @param {string} snowflake @returns {number} unix-ms */
 function snowflakeToMs(snowflake) {
   try {
     return Number((BigInt(snowflake) >> 22n) + DISCORD_EPOCH);
@@ -55,10 +47,9 @@ function snowflakeToMs(snowflake) {
 }
 
 // ─────────────────────────────────────────────
-// REST helpers
+// Emoji key (used as URL segment in reaction endpoint)
 // ─────────────────────────────────────────────
 
-/** @returns {string|null} */
 function emojiKey(emoji) {
   if (!emoji) return null;
   if (emoji.id) return `${emoji.name}:${emoji.id}`;
@@ -66,7 +57,11 @@ function emojiKey(emoji) {
   return null;
 }
 
-/** Returns all non-bot user IDs who reacted with emojiId. */
+// ─────────────────────────────────────────────
+// REST helpers
+// ─────────────────────────────────────────────
+
+/** Fetches ALL non-bot user IDs who placed a given reaction on a message. */
 async function fetchReactorIds(rest, channelId, msgId, emojiId) {
   const ids = [];
   let after;
@@ -77,16 +72,14 @@ async function fetchReactorIds(rest, channelId, msgId, emojiId) {
       })
       .catch(() => []);
     if (!Array.isArray(page) || page.length === 0) break;
-    for (const u of page) {
-      if (u.id && !u.bot) ids.push(u.id);
-    }
+    for (const u of page) if (u.id && !u.bot) ids.push(u.id);
     if (page.length < 100) break;
     after = page[page.length - 1].id;
   }
   return ids;
 }
 
-/** @returns {Promise<any[]>} */
+/** Fetches one page of channel messages. */
 async function fetchPage(rest, channelId, opts = {}) {
   const params = { limit: opts.limit ?? 100 };
   if (opts.before) params.before = opts.before;
@@ -109,7 +102,7 @@ async function processMessage(raw, ch, rest, channelId, config) {
   const authorId = raw.author?.id ?? null;
   const now = Date.now();
 
-  // 1. Photo signatures
+  // 1. Register photo signatures for duplicate detection
   if (Array.isArray(raw.attachments)) {
     for (const att of raw.attachments) {
       if (!isImageAttachment(att)) continue;
@@ -119,13 +112,12 @@ async function processMessage(raw, ch, rest, channelId, config) {
     }
   }
 
-  // 2. Image URL for announcement (pick first image from attachments)
+  // 2. Pick first image URL (stored for the best-photo announcement)
   const imageUrl = pickImageUrl(raw.attachments ?? []);
-
   const rawReactions = Array.isArray(raw.reactions) ? raw.reactions : [];
   const meta = getMeta(ch, msgId, authorId, postedAt, imageUrl);
 
-  // 3. Skip reactor fetch if already synced and outside speed window
+  // 3. Skip if already synced and outside speed-bonus window
   const alreadySynced = meta.syncedAt > 0;
   const inSpeedWindow =
     config.speedBonusEnabled &&
@@ -138,7 +130,7 @@ async function processMessage(raw, ch, rest, channelId, config) {
     return;
   }
 
-  // 4. Collect unique reactor IDs across ALL emoji
+  // 4. Fetch unique reactors across all emoji
   const reactorSet = new Set();
   for (const r of rawReactions) {
     if (!r.count) continue;
@@ -151,28 +143,35 @@ async function processMessage(raw, ch, rest, channelId, config) {
   meta.reactorIds = [...reactorSet];
   meta.syncedAt = now;
 
-  // 5. Credit each unique reactor on their leaderboard
-  //    Historical sync: 1 point (cannot know if they were fast at the time)
+  // 5. Credit each reactor on their leaderboard (historical = 1 pt each)
   for (const userId of reactorSet) {
+    if (userId === authorId) continue; // authors don't earn points on their own photos
     const user = getUser(ch, userId);
-    if (user.rewarded.includes(msgId)) continue;
-    if (!user.pending.includes(msgId)) {
-      user.pending.push(msgId);
-      user.points += 1;
-      user.totalPoints += 1;
-    }
+    if (user.rewarded.includes(msgId) || user.pending.includes(msgId)) continue;
+    user.pending.push(msgId);
+    user.points += 1;
+    user.totalPoints += 1;
+  }
+}
+
+// ─────────────────────────────────────────────
+// Notify helper — sends a message to the notify channel
+// ─────────────────────────────────────────────
+
+async function sendNotify(config, client, text) {
+  if (!config.notifyChannelId || !client) return;
+  try {
+    const ch = await client.channels.fetch(config.notifyChannelId);
+    await ch.send(text);
+  } catch {
+    // Notification failure is non-fatal — just log and continue
+    console.warn("[sync] Could not send notify message.");
   }
 }
 
 // ─────────────────────────────────────────────
 // Public: syncChannel
 // ─────────────────────────────────────────────
-
-async function sendNotify(config, client, text) {
-  if (!config.notifyChannelId || !client) return;
-  const ch = await client.channels.fetch(config.notifyChannelId).catch(() => null);
-  if (ch) await ch.send(text).catch(() => null);
-}
 
 async function syncChannel(channel, data, config) {
   const channelId = channel.id;
@@ -184,13 +183,17 @@ async function syncChannel(channel, data, config) {
   pruneChannel(ch, config.retentionDays);
 
   const isIncremental = ch.lastSeenMessageId !== null;
-  const syncType = isIncremental ? "incremental" : "full";
-  console.log(`[sync] ${syncType} — #${channel.name} (${channelId})`);
+  const syncType = isIncremental ? "تزامن تدريجي" : "تزامن كامل";
+
+  console.log(
+    `[sync] ${isIncremental ? "incremental" : "full"} — #${channel.name} (${channelId})`,
+  );
 
   await sendNotify(
     config,
     client,
-    `\u2705 **Sync started** — ${syncType} sync for <#${channelId}> (#${channel.name}).`,
+    `🔄 **بدء التزامن** — ${syncType} لقناة <#${channelId}>\n` +
+      `> جارٍ جمع البيانات، يرجى الانتظار…`,
   );
 
   let processed = 0;
@@ -198,19 +201,23 @@ async function syncChannel(channel, data, config) {
 
   try {
     if (isIncremental) {
+      // Fetch all messages NEWER than the last known one
       let after = ch.lastSeenMessageId;
       while (true) {
         const page = await fetchPage(rest, channelId, { after, limit: BATCH });
         if (page.length === 0) break;
+        // Process newest → oldest within page for correct newestId tracking
         for (const raw of page) {
           await processMessage(raw, ch, rest, channelId, config);
           processed++;
           if (!newestId || raw.id > newestId) newestId = raw.id;
         }
+        saveData(data); // save after each batch so progress is not lost
         if (page.length < BATCH) break;
         after = page[page.length - 1].id;
       }
     } else {
+      // Full scan — walk backwards from the latest message
       let before;
       while (true) {
         const page = await fetchPage(rest, channelId, { before, limit: BATCH });
@@ -220,6 +227,7 @@ async function syncChannel(channel, data, config) {
           processed++;
           if (!newestId || raw.id > newestId) newestId = raw.id;
         }
+        saveData(data); // save after each batch
         if (page.length < BATCH) break;
         before = page[page.length - 1].id;
       }
@@ -227,19 +235,28 @@ async function syncChannel(channel, data, config) {
 
     if (newestId) ch.lastSeenMessageId = newestId;
     saveData(data);
+
     const userCount = Object.keys(ch.users).length;
-    console.log(`[sync] complete — ${processed} messages, ${userCount} users tracked`);
+    console.log(
+      `[sync] complete — ${processed} messages, ${userCount} users tracked`,
+    );
+
     await sendNotify(
       config,
       client,
-      `\u2705 **Sync finished** — Processed **${processed}** messages, **${userCount}** users tracked in <#${channelId}>.`,
+      `✅ **اكتمل التزامن**\n` +
+        `> 📨 الرسائل المعالجة: **${processed}**\n` +
+        `> 👥 المستخدمون المتتبَّعون: **${userCount}**\n` +
+        `> 📌 الروم: <#${channelId}>`,
     );
   } catch (err) {
     console.error("[sync] error:", err);
     await sendNotify(
       config,
       client,
-      `\u274c **Sync failed** — Error: ${String(err.message || err)}`,
+      `❌ **فشل التزامن**\n` +
+        `> الروم: <#${channelId}>\n` +
+        `> الخطأ: ${String(err.message || err)}`,
     );
     throw err;
   }

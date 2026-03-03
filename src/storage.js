@@ -1,71 +1,55 @@
-/**
- • Name: Ahmed Khawaja  
- • Student ID: 60104808  
- • Created On 03-03-2026-06h-43m
-*/
-
 "use strict";
 
 /**
  * storage.js — config and data persistence
  *
- * HOW DATA IS STORED
- * ─────────────────
- * - config.json: Bot settings (channels, thresholds, toggles). Token comes from .env (DISCORD_TOKEN).
- * - data.json: One object with a single key "channels". Each key under "channels" is a Discord
- *   channel ID (watch channel). For that channel we store:
- *   - lastSeenMessageId: last message we synced (for incremental sync)
- *   - lastPrunedAt: last time we pruned old data
- *   - photoSigs: map of image signature -> { messageId, addedAt } for duplicate detection
- *   - messages: map of messageId -> { authorId, postedAt, imageUrl, reactorIds[], syncedAt }
- *   - users: map of userId -> { points, pending[], rewarded[], cycles, totalPoints }
- * data.json is created on first run if missing. It is written only when something changes
- * (sync, reaction, duplicate registration, prune, etc.).
+ * config.json  : bot settings (token read from .env via DISCORD_TOKEN, never saved back)
+ * data.json    : runtime state — channels, users, photo sigs, message metadata
  *
- * config.json shape — see validateConfig() and saveConfig() (token is not saved).
- * data.json shape — see migrate() and defaultChannel() / defaultUser() / defaultMeta().
+ * Both files live in the project ROOT (one level above src/).
+ * Writes are atomic: write to .tmp → rename.
  */
 
 const fs = require("fs");
 const path = require("path");
 
-const CONFIG_PATH = path.resolve(__dirname, "..", "config.json");
-const DATA_PATH = path.resolve(__dirname, "..", "data.json");
+// Project root is one level above src/
+const ROOT = path.resolve(__dirname, "..");
+const CONFIG_PATH = path.join(ROOT, "config.json");
+const DATA_PATH = path.join(ROOT, "data.json");
 
-const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000; // prune at most once per 6 h
+const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000; // at most once per 6 h
 
 // ─────────────────────────────────────────────
 // Config
 // ─────────────────────────────────────────────
 
-/** @param {unknown} raw @returns {BotConfig} */
 function validateConfig(raw) {
   if (!raw || typeof raw !== "object")
     throw new TypeError("config.json must be a JSON object");
+
   const token =
-    (typeof raw.token === "string" && raw.token.trim()) || process.env.DISCORD_TOKEN;
-  if (!token || !token.trim())
+    (typeof raw.token === "string" && raw.token.trim()) ||
+    (process.env.DISCORD_TOKEN && process.env.DISCORD_TOKEN.trim());
+  if (!token)
     throw new TypeError("DISCORD_TOKEN must be set in .env or config.json");
+
   if (typeof raw.ownerId !== "string" || !raw.ownerId.trim())
     throw new TypeError("config.json: `ownerId` must be a non-empty string");
 
   return {
-    token: token.trim(),
+    token,
     ownerId: raw.ownerId.trim(),
     modIds: Array.isArray(raw.modIds)
       ? raw.modIds.filter((id) => typeof id === "string" && id.trim())
       : [],
-
     watchChannelId: str(raw.watchChannelId),
     notifyChannelId: str(raw.notifyChannelId),
-
     reactionThreshold: posInt(raw.reactionThreshold, 100),
     speedBonusMinutes: posInt(raw.speedBonusMinutes, 60),
     intervalDays: posInt(raw.intervalDays, 7),
     lastAnnouncedAt: posNum(raw.lastAnnouncedAt, 0),
     retentionDays: posInt(raw.retentionDays, 30),
-
-    // Feature toggles
     weeklyEnabled: bool(raw.weeklyEnabled, true),
     duplicateCheckEnabled: bool(raw.duplicateCheckEnabled, true),
     speedBonusEnabled: bool(raw.speedBonusEnabled, true),
@@ -84,10 +68,11 @@ function loadConfig() {
   return validateConfig(raw);
 }
 
+/** Saves config WITHOUT the token (token stays in .env only). */
 function saveConfig(cfg) {
-  const toSave = { ...cfg };
-  delete toSave.token;
-  atomicWrite(CONFIG_PATH, JSON.stringify(toSave, null, 2));
+  const out = { ...cfg };
+  delete out.token;
+  atomicWrite(CONFIG_PATH, JSON.stringify(out, null, 2));
 }
 
 // ─────────────────────────────────────────────
@@ -108,7 +93,6 @@ function defaultUser() {
   return { points: 0, pending: [], rewarded: [], cycles: 0, totalPoints: 0 };
 }
 
-/** @param {string|null} authorId @param {number} postedAt @param {string|null} imageUrl */
 function defaultMeta(authorId, postedAt, imageUrl = null) {
   return {
     authorId: authorId ?? null,
@@ -120,7 +104,7 @@ function defaultMeta(authorId, postedAt, imageUrl = null) {
 }
 
 // ─────────────────────────────────────────────
-// Migration
+// Migration — tolerates old / empty / corrupt data.json
 // ─────────────────────────────────────────────
 
 function migrateUser(u) {
@@ -136,34 +120,26 @@ function migrateUser(u) {
 
 function migrateMeta(m) {
   if (!m || typeof m !== "object") return defaultMeta(null, 0);
-  // Back-compat: old format used emojiCounts / topCount
-  let reactorIds = arr(m.reactorIds);
-  if (
-    reactorIds.length === 0 &&
-    m.emojiCounts &&
-    typeof m.emojiCounts === "object"
-  ) {
-    // Cannot recover individual user IDs from counts — just leave empty; sync will rebuild
-    reactorIds = [];
-  }
   return {
     authorId: str(m.authorId),
     postedAt: posNum(m.postedAt, 0),
     imageUrl: str(m.imageUrl),
-    reactorIds,
+    reactorIds: arr(m.reactorIds),
     syncedAt: posNum(m.syncedAt, 0),
   };
 }
 
 function migrateChannel(ch) {
   if (!ch || typeof ch !== "object") return defaultChannel();
+
   const users = {};
   for (const [uid, u] of Object.entries(ch.users ?? {}))
     users[uid] = migrateUser(u);
   const messages = {};
   for (const [mid, m] of Object.entries(ch.messages ?? {}))
     messages[mid] = migrateMeta(m);
-  // Back-compat: old array-based photoSigs
+
+  // Back-compat: old array-based photoSigs / photoSignatures
   const photoSigs =
     ch.photoSigs && typeof ch.photoSigs === "object" ? { ...ch.photoSigs } : {};
   if (Array.isArray(ch.photoSignatures)) {
@@ -177,6 +153,7 @@ function migrateChannel(ch) {
       if (sig && !photoSigs[sig]) photoSigs[sig] = { messageId: null, addedAt };
     }
   }
+
   return {
     lastSeenMessageId: str(ch.lastSeenMessageId),
     lastPrunedAt: posNum(ch.lastPrunedAt, 0),
@@ -197,36 +174,40 @@ function migrate(raw) {
       channels[cid] = migrateChannel(ch);
     return { channels };
   }
-  // Very old flat format
-  const channels = {};
-  for (const [cid, a] of Object.entries(raw?.photoSignatures ?? {})) {
-    if (!Array.isArray(a)) continue;
-    channels[cid] = defaultChannel();
-    for (const item of a) {
-      if (!item) continue;
-      const sig = typeof item === "string" ? item : item.sig;
-      const addedAt = item?.addedAt ?? Date.now();
-      if (sig) channels[cid].photoSigs[sig] = { messageId: null, addedAt };
-    }
-  }
-  return { channels };
+  return { channels: {} };
 }
 
+// ─────────────────────────────────────────────
+// Data load / save
+// ─────────────────────────────────────────────
+
 function loadData() {
+  // data.json may be missing, empty, or contain invalid JSON — handle all cases
+  let raw = null;
   try {
-    const raw = fs.readFileSync(DATA_PATH, "utf8");
-    return migrate(JSON.parse(raw));
+    const text = fs.readFileSync(DATA_PATH, "utf8").trim();
+    if (text) raw = JSON.parse(text); // SyntaxError if corrupt
   } catch (err) {
-    const defaultData = { channels: {} };
-    if (err.code === "ENOENT") {
-      try {
-        atomicWrite(DATA_PATH, JSON.stringify(defaultData, null, 2));
-      } catch (writeErr) {
-        console.error("[storage] Could not create data.json:", writeErr.message);
-      }
+    if (err.code !== "ENOENT") {
+      // File exists but is empty or corrupt — log and start fresh
+      console.warn(
+        `[storage] data.json unreadable (${err.message}), starting fresh.`,
+      );
     }
-    return defaultData;
   }
+
+  const data = migrate(raw ?? {});
+
+  // Always ensure the file exists on disk with valid JSON
+  if (!fs.existsSync(DATA_PATH)) {
+    try {
+      atomicWrite(DATA_PATH, JSON.stringify(data, null, 2));
+    } catch (e) {
+      console.error("[storage] Could not create data.json:", e.message);
+    }
+  }
+
+  return data;
 }
 
 function saveData(data) {
@@ -250,7 +231,7 @@ function getUser(ch, userId) {
 function getMeta(ch, msgId, authorId, postedAt, imageUrl) {
   if (!ch.messages[msgId])
     ch.messages[msgId] = defaultMeta(authorId, postedAt, imageUrl);
-  // Backfill imageUrl if it was stored as null previously
+  // Backfill imageUrl if previously stored as null
   if (imageUrl && !ch.messages[msgId].imageUrl)
     ch.messages[msgId].imageUrl = imageUrl;
   return ch.messages[msgId];
@@ -260,14 +241,6 @@ function getMeta(ch, msgId, authorId, postedAt, imageUrl) {
 // Pruning
 // ─────────────────────────────────────────────
 
-/**
- * Removes photo sigs, message metas, and cleans user arrays for entries
- * older than retentionDays.  Throttled to once per PRUNE_INTERVAL_MS unless forced.
- * @param {ChannelData} ch
- * @param {number}      retentionDays
- * @param {boolean}     [force=false]
- * @returns {boolean}  true if anything changed
- */
 function pruneChannel(ch, retentionDays, force = false) {
   const now = Date.now();
   if (!force && now - ch.lastPrunedAt < PRUNE_INTERVAL_MS) return false;
@@ -317,17 +290,13 @@ const isAllowed = (cfg, uid) => isOwner(cfg, uid) || isMod(cfg, uid);
 // Points
 // ─────────────────────────────────────────────
 
-/**
- * Returns 2 pts if within speedBonusMinutes, else 1.
- * Always returns 1 if speedBonusEnabled is false.
- */
 function reactionPoints(postedAt, reactedAt, cfg) {
   if (!cfg.speedBonusEnabled) return 1;
   return reactedAt - postedAt <= cfg.speedBonusMinutes * 60 * 1000 ? 2 : 1;
 }
 
 // ─────────────────────────────────────────────
-// Internals
+// Atomic write
 // ─────────────────────────────────────────────
 
 function atomicWrite(filePath, content) {
@@ -335,6 +304,10 @@ function atomicWrite(filePath, content) {
   fs.writeFileSync(tmp, content, "utf8");
   fs.renameSync(tmp, filePath);
 }
+
+// ─────────────────────────────────────────────
+// Tiny coercers
+// ─────────────────────────────────────────────
 
 const posInt = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);
 const posNum = (v, d) => (Number.isFinite(v) && v >= 0 ? v : d);
@@ -365,8 +338,7 @@ module.exports = {
 };
 
 /**
- * @typedef {{
- *   token:string, ownerId:string, modIds:string[],
+ * @typedef {{ token:string, ownerId:string, modIds:string[],
  *   watchChannelId:string|null, notifyChannelId:string|null,
  *   reactionThreshold:number, speedBonusMinutes:number,
  *   intervalDays:number, lastAnnouncedAt:number, retentionDays:number,
@@ -378,12 +350,9 @@ module.exports = {
  *
  * @typedef {{ authorId:string|null, postedAt:number, imageUrl:string|null, reactorIds:string[], syncedAt:number }} MessageMeta
  *
- * @typedef {{
- *   lastSeenMessageId:string|null, lastPrunedAt:number,
+ * @typedef {{ lastSeenMessageId:string|null, lastPrunedAt:number,
  *   photoSigs:Record<string,{messageId:string|null,addedAt:number}>,
- *   messages:Record<string,MessageMeta>,
- *   users:Record<string,UserData>,
- * }} ChannelData
+ *   messages:Record<string,MessageMeta>, users:Record<string,UserData> }} ChannelData
  *
  * @typedef {{ channels:Record<string,ChannelData> }} BotData
  */

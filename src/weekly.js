@@ -1,48 +1,52 @@
-/**
- • Name: Ahmed Khawaja  
- • Student ID: 60104808  
- • Created On 03-03-2026-06h-43m
-*/
-
 "use strict";
 
 /**
- * weekly.js — best-photo period announcement (manual only, via "Post Best Photo Now" button)
+ * weekly.js — best-photo announcement (manual only, triggered by the settings button)
  *
- * Winner = message with the most UNIQUE human reactors (meta.reactorIds.length).
- * Window is (lastAnnouncedAt, now]. After sending we set lastAnnouncedAt = now.
- * Announcement is sent to the watch channel. No automatic scheduling — only when the button is clicked.
+ * Winner = message with the most UNIQUE human reactors (meta.reactorIds.length)
+ * in the window (lastAnnouncedAt, now].
+ *
+ * Announcement is sent to the WATCH channel so the photo renders inline.
+ * After sending, lastAnnouncedAt is updated to now.
+ *
+ * There is NO automatic scheduler — this runs only when an admin clicks
+ * "Post Best Photo Now" in the settings panel.
  */
 
 const { getChannel, pruneChannel, saveData } = require("./storage");
+const { pickImageUrl } = require("./photoUtils");
 
 /**
- * Sends the best-photo announcement now (called from settings button only).
  * @param {import("discord.js").Client}   client
  * @param {import("./storage").BotConfig} config
  * @param {import("./storage").BotData}   data
  * @param {Function}                      saveConfig
- * @returns {{ ok: boolean, noWinner?: boolean, error?: string }}
+ * @returns {Promise<{ ok:boolean, noWinner?:boolean, error?:string }>}
  */
 async function sendWeeklyAnnouncementNow(client, config, data, saveConfig) {
-  if (!config.weeklyEnabled) {
-    return { ok: false, error: "weekly_disabled" };
-  }
+  if (!config.weeklyEnabled) return { ok: false, error: "weekly_disabled" };
 
   const { watchChannelId, intervalDays, lastAnnouncedAt } = config;
-  if (!watchChannelId) {
-    return { ok: false, error: "no_watch_channel" };
-  }
+  if (!watchChannelId) return { ok: false, error: "no_watch_channel" };
+
+  // Fetch the watch channel early so we can fail fast
+  const announceChannel = await client.channels
+    .fetch(watchChannelId)
+    .catch(() => null);
+  if (!announceChannel) return { ok: false, error: "channel_unavailable" };
 
   const now = Date.now();
   const windowStart = lastAnnouncedAt;
+
+  // Advance the timestamp immediately — prevents double-posting if the button
+  // is clicked twice in quick succession
   config.lastAnnouncedAt = now;
   saveConfig(config);
 
   const ch = getChannel(data, watchChannelId);
   if (pruneChannel(ch, config.retentionDays)) saveData(data);
 
-  // ── Find winner ──────────────────────────────────────────────────────────
+  // ── Find the winning message ─────────────────────────────────────────────
   let winnerKey = null;
   let winnerMeta = null;
   let winnerCount = 0;
@@ -52,9 +56,10 @@ async function sendWeeklyAnnouncementNow(client, config, data, saveConfig) {
     if (!meta.reactorIds || meta.reactorIds.length === 0) continue;
 
     const count = meta.reactorIds.length;
+    // Tie-break: newer message wins
     if (
       count > winnerCount ||
-      (count === winnerCount && msgId > winnerKey) // tie-break: newer wins
+      (count === winnerCount && winnerKey && msgId > winnerKey)
     ) {
       winnerCount = count;
       winnerKey = msgId;
@@ -62,50 +67,36 @@ async function sendWeeklyAnnouncementNow(client, config, data, saveConfig) {
     }
   }
 
-  // ── Fetch watch channel (announcements go here) ──────────────────────────
-  const announceChannel = await client.channels
-    .fetch(watchChannelId)
-    .catch(() => null);
-  if (!announceChannel) {
-    config.lastAnnouncedAt = windowStart;
-    saveConfig(config);
-    return { ok: false, error: "channel_unavailable" };
-  }
-
   // ── No winner ─────────────────────────────────────────────────────────────
   if (!winnerMeta || winnerCount === 0) {
     await announceChannel
       .send(
-        `📷 **لا يوجد فائز هذه الفترة.**\n` +
-          `لم تُسجَّل أي تفاعلات على الصور. استمروا في النشر والتفاعل! 🌟`,
+        `📷 **لا يوجد فائز هذه الفترة**\n` +
+          `> لم تُسجَّل أي تفاعلات على الصور خلال هذه الفترة.\n` +
+          `> استمروا في النشر والتفاعل! 🌟`,
       )
       .catch(() => null);
     return { ok: true, noWinner: true };
   }
 
-  // ── Try to get the actual image from Discord ─────────────────────────────
+  // ── Resolve image URL ─────────────────────────────────────────────────────
   let imageUrl = winnerMeta.imageUrl ?? null;
 
-  // If we stored a URL already, use it. Otherwise try to re-fetch the message.
   if (!imageUrl) {
-    const watchChannel = await client.channels
-      .fetch(watchChannelId)
+    // Try to fetch the original Discord message to get its attachment URL
+    const discordMsg = await announceChannel.messages
+      .fetch(winnerKey)
       .catch(() => null);
-    if (watchChannel) {
-      const discordMsg = await watchChannel.messages
-        .fetch(winnerKey)
-        .catch(() => null);
-      if (discordMsg) {
-        const { pickImageUrl } = require("./photoUtils");
-        imageUrl = pickImageUrl(discordMsg.attachments) ?? null;
-        // Persist so we don't need to fetch again
+    if (discordMsg) {
+      imageUrl = pickImageUrl(discordMsg.attachments) ?? null;
+      if (imageUrl) {
         winnerMeta.imageUrl = imageUrl;
         saveData(data);
       }
     }
   }
 
-  // ── Build announcement ───────────────────────────────────────────────────
+  // ── Build and send the announcement ──────────────────────────────────────
   const authorMention = winnerMeta.authorId
     ? `<@${winnerMeta.authorId}>`
     : "أحد الأعضاء";
@@ -116,22 +107,26 @@ async function sendWeeklyAnnouncementNow(client, config, data, saveConfig) {
     `🏅  **أفضل صورة — ${periodLabel}**`,
     `━━━━━━━━━━━━━━━━━━━━━━`,
     ``,
-    `- 📸  **صاحب الصورة:** ${authorMention}`,
-    `- ❤️  **المتفاعلون:** ${winnerCount} شخص`,
+    `> 📸 **صاحب الصورة:** ${authorMention}`,
+    `> ❤️ **عدد المتفاعلين:** ${winnerCount} شخص`,
     ``,
     `@here`,
   ].join("\n");
 
   await announceChannel.send(text).catch(() => null);
 
-  // Send the photo after the text so it renders as a clean preview below.
+  // Send the image as a separate message so it renders as a clean preview
   if (imageUrl) {
     await announceChannel.send(imageUrl).catch(() => null);
   }
+
   return { ok: true, noWinner: false };
 }
 
-/** @param {number} days @returns {string} */
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+
 function daysToArabic(days) {
   if (days === 1) return "اليوم الماضي";
   if (days === 7) return "الأسبوع الماضي";

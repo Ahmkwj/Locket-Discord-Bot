@@ -353,8 +353,7 @@ function modal(customId, title, label, placeholder, minLen = 1, maxLen = 20) {
 async function resolveChannel(interaction, client, rawId) {
   if (!SNOWFLAKE_RE.test(rawId)) {
     await interaction.reply({
-      content:
-        "❌ معرّف القناة غير صالح — يجب أن يكون رقماً من 17 إلى 20 خانة.",
+      content: "❌ معرّف الروم غير صالح — يجب أن يكون رقماً من 17 إلى 20 خانة.",
       ephemeral: false,
     });
     return null;
@@ -362,7 +361,7 @@ async function resolveChannel(interaction, client, rawId) {
   const ch = await client.channels.fetch(rawId).catch(() => null);
   if (!ch) {
     await interaction.reply({
-      content: "❌ لم يتم العثور على القناة أو البوت لا يملك صلاحية الوصول.",
+      content: "❌ لم يتم العثور على الروم أو البوت لا يملك صلاحية الوصول.",
       ephemeral: false,
     });
     return null;
@@ -439,7 +438,7 @@ async function handleSettingsInteraction(
           modal(
             M.WATCH,
             "تعيين قناة المراقبة",
-            "معرّف القناة",
+            "معرّف الروم",
             "مثال: 1234567890123456789",
             17,
             20,
@@ -450,7 +449,7 @@ async function handleSettingsInteraction(
           modal(
             M.NOTIFY,
             "تعيين قناة الإشعارات",
-            "معرّف القناة",
+            "معرّف الروم",
             "مثال: 1234567890123456789",
             17,
             20,

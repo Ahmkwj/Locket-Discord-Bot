@@ -9,72 +9,21 @@
 /**
  * storage.js — config and data persistence
  *
- * ═══════════════════════════════════════════
- * config.json shape
- * ═══════════════════════════════════════════
- * {
- *   "token":              "BOT_TOKEN",
- *   "ownerId":            "DISCORD_USER_ID",
- *   "modIds":             [],
+ * HOW DATA IS STORED
+ * ─────────────────
+ * - config.json: Bot settings (channels, thresholds, toggles). Token comes from .env (DISCORD_TOKEN).
+ * - data.json: One object with a single key "channels". Each key under "channels" is a Discord
+ *   channel ID (watch channel). For that channel we store:
+ *   - lastSeenMessageId: last message we synced (for incremental sync)
+ *   - lastPrunedAt: last time we pruned old data
+ *   - photoSigs: map of image signature -> { messageId, addedAt } for duplicate detection
+ *   - messages: map of messageId -> { authorId, postedAt, imageUrl, reactorIds[], syncedAt }
+ *   - users: map of userId -> { points, pending[], rewarded[], cycles, totalPoints }
+ * data.json is created on first run if missing. It is written only when something changes
+ * (sync, reaction, duplicate registration, prune, etc.).
  *
- *   // Channels
- *   "watchChannelId":     null,
- *   "notifyChannelId":    null,
- *
- *   // Leaderboard / goal
- *   "reactionThreshold":  100,      pts needed to complete a cycle
- *   "speedBonusMinutes":  60,       minutes after post where reaction = 2 pts
- *
- *   // Best-photo announcement
- *   "intervalDays":       7,        days between announcements
- *   "lastAnnouncedAt":    0,        unix-ms of last announcement
- *
- *   // Data retention
- *   "retentionDays":      30,       days to keep message / sig data
- *
- *   // Feature toggles  (all true by default)
- *   "weeklyEnabled":          true,   enable/disable best-photo announcements
- *   "duplicateCheckEnabled":  true,   enable/disable duplicate photo detection
- *   "speedBonusEnabled":      true,   enable/disable the 2x speed bonus
- *   "goalNotifyEnabled":      true,   enable/disable goal-reached notifications
- *   "leaderboardEnabled":     true,   enable/disable the leaderboard command
- * }
- *
- * ═══════════════════════════════════════════
- * data.json shape
- * ═══════════════════════════════════════════
- * {
- *   "channels": {
- *     "<channelId>": {
- *       "lastSeenMessageId": "snowflake | null",
- *       "lastPrunedAt": 0,
- *
- *       "photoSigs": {
- *         "<sig>": { "messageId": "snowflake", "addedAt": 1700000000000 }
- *       },
- *
- *       "messages": {
- *         "<messageId>": {
- *           "authorId":      "userId | null",
- *           "postedAt":      1700000000000,
- *           "imageUrl":      "https://... | null",  ← first image URL in message
- *           "reactorIds":    ["userId", ...],        ← unique human reactors (all emoji combined)
- *           "syncedAt":      0                       ← last time reactor list was fully fetched
- *         }
- *       },
- *
- *       "users": {
- *         "<userId>": {
- *           "points":      42,       current-cycle score
- *           "pending":     [],       msg IDs reacted to this cycle
- *           "rewarded":    [],       msg IDs counted in past cycles
- *           "cycles":      0,        completed goal cycles
- *           "totalPoints": 0         all-time points
- *         }
- *       }
- *     }
- *   }
- * }
+ * config.json shape — see validateConfig() and saveConfig() (token is not saved).
+ * data.json shape — see migrate() and defaultChannel() / defaultUser() / defaultMeta().
  */
 
 const fs = require("fs");
@@ -266,13 +215,16 @@ function migrate(raw) {
 function loadData() {
   try {
     const raw = fs.readFileSync(DATA_PATH, "utf8");
-    if (!raw || !raw.trim()) throw new Error("empty file");
     return migrate(JSON.parse(raw));
-  } catch {
+  } catch (err) {
     const defaultData = { channels: {} };
-    try {
-      atomicWrite(DATA_PATH, JSON.stringify(defaultData, null, 2));
-    } catch (_) {}
+    if (err.code === "ENOENT") {
+      try {
+        atomicWrite(DATA_PATH, JSON.stringify(defaultData, null, 2));
+      } catch (writeErr) {
+        console.error("[storage] Could not create data.json:", writeErr.message);
+      }
+    }
     return defaultData;
   }
 }

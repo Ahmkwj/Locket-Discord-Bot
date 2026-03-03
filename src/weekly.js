@@ -7,53 +7,34 @@
 "use strict";
 
 /**
- * weekly.js — best-photo period announcement
+ * weekly.js — best-photo period announcement (manual only, via "Post Best Photo Now" button)
  *
- * Winner metric
- * ─────────────
- * Winner = message with the most UNIQUE human reactors (meta.reactorIds.length),
- * counting each person only once regardless of how many different emoji they used.
- * Example: Ahmed reacts ❤️, Omar reacts 🚪 → 2 unique reactors, 2 points.
- * Anti-abuse: one person adding 10 different emoji is still just 1 unique reactor.
- *
- * Window logic
- * ────────────
- * The window is (lastAnnouncedAt, now].
- * After announcing we set lastAnnouncedAt = now.
- * The next window starts from that moment — no overlap, no gap, no re-winning.
- *
- * Photo delivery
- * ──────────────
- * We send the announcement text first, then try to send the winning photo as a
- * separate message with the image URL.  Discord auto-previews URLs, so no embed
- * needed.  If the message no longer exists in Discord we still post the text.
- *
- * Scheduling
- * ──────────
- * index.js calls tickWeekly() every CHECK_INTERVAL_MS (5 min).
+ * Winner = message with the most UNIQUE human reactors (meta.reactorIds.length).
+ * Window is (lastAnnouncedAt, now]. After sending we set lastAnnouncedAt = now.
+ * Announcement is sent to the watch channel. No automatic scheduling — only when the button is clicked.
  */
 
 const { getChannel, pruneChannel, saveData } = require("./storage");
 
-const CHECK_INTERVAL_MS = 5 * 60 * 1000;
-
 /**
+ * Sends the best-photo announcement now (called from settings button only).
  * @param {import("discord.js").Client}   client
  * @param {import("./storage").BotConfig} config
  * @param {import("./storage").BotData}   data
  * @param {Function}                      saveConfig
+ * @returns {{ ok: boolean, noWinner?: boolean, error?: string }}
  */
-async function tickWeekly(client, config, data, saveConfig) {
-  if (!config.weeklyEnabled) return;
+async function sendWeeklyAnnouncementNow(client, config, data, saveConfig) {
+  if (!config.weeklyEnabled) {
+    return { ok: false, error: "weekly_disabled" };
+  }
 
   const { watchChannelId, intervalDays, lastAnnouncedAt } = config;
-  if (!watchChannelId) return;
+  if (!watchChannelId) {
+    return { ok: false, error: "no_watch_channel" };
+  }
 
   const now = Date.now();
-  const intervalMs = intervalDays * 24 * 60 * 60 * 1000;
-  if (now < lastAnnouncedAt + intervalMs) return;
-
-  // Stamp now immediately to prevent double-fire.
   const windowStart = lastAnnouncedAt;
   config.lastAnnouncedAt = now;
   saveConfig(config);
@@ -85,7 +66,11 @@ async function tickWeekly(client, config, data, saveConfig) {
   const announceChannel = await client.channels
     .fetch(watchChannelId)
     .catch(() => null);
-  if (!announceChannel) return;
+  if (!announceChannel) {
+    config.lastAnnouncedAt = windowStart;
+    saveConfig(config);
+    return { ok: false, error: "channel_unavailable" };
+  }
 
   // ── No winner ─────────────────────────────────────────────────────────────
   if (!winnerMeta || winnerCount === 0) {
@@ -95,7 +80,7 @@ async function tickWeekly(client, config, data, saveConfig) {
           `لم تُسجَّل أي تفاعلات على الصور. استمروا في النشر والتفاعل! 🌟`,
       )
       .catch(() => null);
-    return;
+    return { ok: true, noWinner: true };
   }
 
   // ── Try to get the actual image from Discord ─────────────────────────────
@@ -143,6 +128,7 @@ async function tickWeekly(client, config, data, saveConfig) {
   if (imageUrl) {
     await announceChannel.send(imageUrl).catch(() => null);
   }
+  return { ok: true, noWinner: false };
 }
 
 /** @param {number} days @returns {string} */
@@ -154,4 +140,4 @@ function daysToArabic(days) {
   return `الـ ${days} أيام الماضية`;
 }
 
-module.exports = { tickWeekly, CHECK_INTERVAL_MS };
+module.exports = { sendWeeklyAnnouncementNow };

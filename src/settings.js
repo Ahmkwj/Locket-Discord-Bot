@@ -57,7 +57,7 @@ const {
 
 const { buildEmbed } = require("./embeds");
 const { syncChannel } = require("./sync");
-const { tickWeekly } = require("./weekly");
+const { sendWeeklyAnnouncementNow } = require("./weekly");
 const { getChannel, isOwner, isAllowed } = require("./storage");
 
 // ─────────────────────────────────────────────────────
@@ -563,16 +563,30 @@ async function handleSettingsInteraction(
       }
 
       case B.POST_NOW: {
-        // Force-post by temporarily zeroing lastAnnouncedAt.
-        const saved = cfg.lastAnnouncedAt;
-        cfg.lastAnnouncedAt = 0;
-        await tickWeekly(client, cfg, data, saveConfig);
-        // If tickWeekly didn't fire (channels not set etc.), restore.
-        if (cfg.lastAnnouncedAt === 0) cfg.lastAnnouncedAt = saved;
-        await interaction.reply({
-          content: "✅ تم نشر إعلان أفضل صورة.",
-          ephemeral: false,
-        });
+        const result = await sendWeeklyAnnouncementNow(
+          client,
+          cfg,
+          data,
+          saveConfig,
+        ).catch((err) => ({ ok: false, error: err.message || "unknown" }));
+        if (result.ok) {
+          await interaction.reply({
+            content: result.noWinner
+              ? "✅ تم إرسال الإعلان: لا يوجد فائز في هذه الفترة."
+              : "✅ تم نشر إعلان أفضل صورة في قناة المراقبة.",
+            ephemeral: false,
+          });
+        } else {
+          const msg =
+            result.error === "no_watch_channel"
+              ? "❌ لم يتم تعيين قناة مراقبة بعد."
+              : result.error === "weekly_disabled"
+                ? "❌ إعلان أفضل صورة معطّل من الإعدادات."
+                : result.error === "channel_unavailable"
+                  ? "❌ تعذّر الوصول إلى قناة المراقبة."
+                  : `❌ حدث خطأ: ${result.error}`;
+          await interaction.reply({ content: msg, ephemeral: false });
+        }
         return refreshPanel(interaction, cfg, owner);
       }
 

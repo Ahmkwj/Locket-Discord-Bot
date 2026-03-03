@@ -168,62 +168,81 @@ async function processMessage(raw, ch, rest, channelId, config) {
 // Public: syncChannel
 // ─────────────────────────────────────────────
 
+async function sendNotify(config, client, text) {
+  if (!config.notifyChannelId || !client) return;
+  const ch = await client.channels.fetch(config.notifyChannelId).catch(() => null);
+  if (ch) await ch.send(text).catch(() => null);
+}
+
 async function syncChannel(channel, data, config) {
   const channelId = channel.id;
   const rest = channel.client.rest;
+  const client = channel.client;
   const ch = getChannel(data, channelId);
   const BATCH = 100;
 
   pruneChannel(ch, config.retentionDays);
 
   const isIncremental = ch.lastSeenMessageId !== null;
-  console.log(
-    `[sync] ${isIncremental ? "incremental" : "full"} — #${channel.name} (${channelId})`,
+  const syncType = isIncremental ? "incremental" : "full";
+  console.log(`[sync] ${syncType} — #${channel.name} (${channelId})`);
+
+  await sendNotify(
+    config,
+    client,
+    `\u2705 **Sync started** — ${syncType} sync for <#${channelId}> (#${channel.name}).`,
   );
 
   let processed = 0;
   let newestId = ch.lastSeenMessageId;
 
-  if (isIncremental) {
-    let after = ch.lastSeenMessageId;
-    while (true) {
-      const page = await fetchPage(rest, channelId, { after, limit: BATCH });
-      if (page.length === 0) break;
-      for (const raw of page) {
-        await processMessage(raw, ch, rest, channelId, config);
-        processed++;
-        if (!newestId || raw.id > newestId) newestId = raw.id;
+  try {
+    if (isIncremental) {
+      let after = ch.lastSeenMessageId;
+      while (true) {
+        const page = await fetchPage(rest, channelId, { after, limit: BATCH });
+        if (page.length === 0) break;
+        for (const raw of page) {
+          await processMessage(raw, ch, rest, channelId, config);
+          processed++;
+          if (!newestId || raw.id > newestId) newestId = raw.id;
+        }
+        if (page.length < BATCH) break;
+        after = page[page.length - 1].id;
       }
-      if (page.length < BATCH) break;
-      after = page[page.length - 1].id;
-    }
-  } else {
-    let before;
-    while (true) {
-      const page = await fetchPage(rest, channelId, { before, limit: BATCH });
-      if (page.length === 0) break;
-      for (const raw of page) {
-        await processMessage(raw, ch, rest, channelId, config);
-        processed++;
-        if (!newestId || raw.id > newestId) newestId = raw.id;
+    } else {
+      let before;
+      while (true) {
+        const page = await fetchPage(rest, channelId, { before, limit: BATCH });
+        if (page.length === 0) break;
+        for (const raw of page) {
+          await processMessage(raw, ch, rest, channelId, config);
+          processed++;
+          if (!newestId || raw.id > newestId) newestId = raw.id;
+        }
+        if (page.length < BATCH) break;
+        before = page[page.length - 1].id;
       }
-      if (page.length < BATCH) break;
-      before = page[page.length - 1].id;
     }
+
+    if (newestId) ch.lastSeenMessageId = newestId;
+    saveData(data);
+    const userCount = Object.keys(ch.users).length;
+    console.log(`[sync] complete — ${processed} messages, ${userCount} users tracked`);
+    await sendNotify(
+      config,
+      client,
+      `\u2705 **Sync finished** — Processed **${processed}** messages, **${userCount}** users tracked in <#${channelId}>.`,
+    );
+  } catch (err) {
+    console.error("[sync] error:", err);
+    await sendNotify(
+      config,
+      client,
+      `\u274c **Sync failed** — Error: ${String(err.message || err)}`,
+    );
+    throw err;
   }
-
-  if (newestId) ch.lastSeenMessageId = newestId;
-  saveData(data);
-  console.log(
-    `[sync] complete — ${processed} messages, ${Object.keys(ch.users).length} users tracked`,
-  );
-
-  const userCount = Object.keys(ch.users).length;
-  await channel
-    .send(
-      `تمت مزامنة القناة. تمت معالجة **${processed}** رسالة و **${userCount}** متفاعل.`,
-    )
-    .catch(() => null);
 }
 
 module.exports = { syncChannel, snowflakeToMs, emojiKey };

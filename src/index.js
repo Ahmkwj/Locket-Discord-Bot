@@ -42,7 +42,6 @@ const {
 } = require("./duplicates");
 const { onReactionAdd } = require("./reactions");
 const { syncChannel } = require("./sync");
-const { tickWeekly, CHECK_INTERVAL_MS } = require("./weekly");
 const {
   handleSettingsCommand,
   handleSettingsInteraction,
@@ -84,7 +83,7 @@ const client = new Client({
 client.once("ready", async () => {
   console.log(`[boot] logged in as ${client.user.tag}`);
 
-  // Startup incremental sync
+  // Startup sync (full or incremental) for watch channel
   if (config.watchChannelId) {
     const ch = await client.channels
       .fetch(config.watchChannelId)
@@ -102,18 +101,6 @@ client.once("ready", async () => {
       "[boot] no watch channel configured — send setlocket to set one up",
     );
   }
-
-  // Weekly announcement ticker — every 5 minutes
-  setInterval(() => {
-    tickWeekly(client, config, data, saveConfig).catch((e) =>
-      console.error("[weekly]", e),
-    );
-  }, CHECK_INTERVAL_MS);
-
-  // Run once immediately on startup in case the bot was offline when it was due
-  tickWeekly(client, config, data, saveConfig).catch((e) =>
-    console.error("[weekly:startup]", e),
-  );
 
   console.log("[boot] ready");
 });

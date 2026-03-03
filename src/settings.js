@@ -36,7 +36,7 @@
  *
  * Each number/channel button opens a Discord Modal.
  * Toggle buttons flip the boolean immediately with no modal.
- * All interaction replies are ephemeral (only the acting admin sees them).
+ * All interaction replies are visible in the channel.
  * After every action the embed updates in-place.
  *
  * Permission model:
@@ -355,7 +355,7 @@ async function resolveChannel(interaction, client, rawId) {
     await interaction.reply({
       content:
         "❌ معرّف القناة غير صالح — يجب أن يكون رقماً من 17 إلى 20 خانة.",
-      ephemeral: true,
+      ephemeral: false,
     });
     return null;
   }
@@ -363,7 +363,7 @@ async function resolveChannel(interaction, client, rawId) {
   if (!ch) {
     await interaction.reply({
       content: "❌ لم يتم العثور على القناة أو البوت لا يملك صلاحية الوصول.",
-      ephemeral: true,
+      ephemeral: false,
     });
     return null;
   }
@@ -423,7 +423,7 @@ async function handleSettingsInteraction(
   if (!isAllowed(cfg, interaction.user.id)) {
     await interaction.reply({
       content: "⛔ ليس لديك صلاحية للوصول إلى هذه الإعدادات.",
-      ephemeral: true,
+      ephemeral: false,
     });
     return;
   }
@@ -509,7 +509,7 @@ async function handleSettingsInteraction(
         saveConfig(cfg);
         await interaction.reply({
           content: `✅ إعلان أفضل صورة: **${cfg.weeklyEnabled ? "مفعّل" : "معطّل"}**`,
-          ephemeral: true,
+          ephemeral: false,
         });
         return refreshPanel(interaction, cfg, owner);
 
@@ -518,7 +518,7 @@ async function handleSettingsInteraction(
         saveConfig(cfg);
         await interaction.reply({
           content: `✅ كشف الصور المكررة: **${cfg.duplicateCheckEnabled ? "مفعّل" : "معطّل"}**`,
-          ephemeral: true,
+          ephemeral: false,
         });
         return refreshPanel(interaction, cfg, owner);
 
@@ -527,7 +527,7 @@ async function handleSettingsInteraction(
         saveConfig(cfg);
         await interaction.reply({
           content: `✅ مكافأة التفاعل السريع: **${cfg.speedBonusEnabled ? "مفعّلة" : "معطّلة"}**`,
-          ephemeral: true,
+          ephemeral: false,
         });
         return refreshPanel(interaction, cfg, owner);
 
@@ -536,7 +536,7 @@ async function handleSettingsInteraction(
         saveConfig(cfg);
         await interaction.reply({
           content: `✅ إشعار إتمام الهدف: **${cfg.goalNotifyEnabled ? "مفعّل" : "معطّل"}**`,
-          ephemeral: true,
+          ephemeral: false,
         });
         return refreshPanel(interaction, cfg, owner);
 
@@ -545,7 +545,7 @@ async function handleSettingsInteraction(
         if (!cfg.watchChannelId) {
           return interaction.reply({
             content: "❌ لم يتم تعيين قناة مراقبة بعد.",
-            ephemeral: true,
+            ephemeral: false,
           });
         }
         const ch = getChannel(data, cfg.watchChannelId);
@@ -557,7 +557,7 @@ async function handleSettingsInteraction(
         await interaction.reply({
           content:
             "✅ **تمت إعادة ضبط لوحة الصدارة.**\n> الجولات المكتملة والنقاط الإجمالية محفوظة.",
-          ephemeral: true,
+          ephemeral: false,
         });
         return refreshPanel(interaction, cfg, owner);
       }
@@ -571,7 +571,7 @@ async function handleSettingsInteraction(
         if (cfg.lastAnnouncedAt === 0) cfg.lastAnnouncedAt = saved;
         await interaction.reply({
           content: "✅ تم نشر إعلان أفضل صورة.",
-          ephemeral: true,
+          ephemeral: false,
         });
         return refreshPanel(interaction, cfg, owner);
       }
@@ -579,7 +579,7 @@ async function handleSettingsInteraction(
       case B.DASHBOARD: {
         await interaction.reply({
           embeds: [buildDashboardEmbed(cfg, data)],
-          ephemeral: true,
+          ephemeral: false,
         });
         return;
       }
@@ -589,7 +589,7 @@ async function handleSettingsInteraction(
         if (!owner)
           return interaction.reply({
             content: "⛔ هذا الخيار للمالك فقط.",
-            ephemeral: true,
+            ephemeral: false,
           });
         return interaction.showModal(
           modal(
@@ -606,7 +606,7 @@ async function handleSettingsInteraction(
         if (!owner)
           return interaction.reply({
             content: "⛔ هذا الخيار للمالك فقط.",
-            ephemeral: true,
+            ephemeral: false,
           });
         return interaction.showModal(
           modal(
@@ -623,7 +623,7 @@ async function handleSettingsInteraction(
         if (!owner)
           return interaction.reply({
             content: "⛔ هذا الخيار للمالك فقط.",
-            ephemeral: true,
+            ephemeral: false,
           });
         const list = cfg.modIds.length
           ? cfg.modIds
@@ -632,7 +632,7 @@ async function handleSettingsInteraction(
           : "لا يوجد مشرفون حالياً.";
         return interaction.reply({
           content: `👥 **قائمة المشرفين:**\n${list}`,
-          ephemeral: true,
+          ephemeral: false,
         });
       }
     }
@@ -651,7 +651,7 @@ async function handleSettingsInteraction(
         saveConfig(cfg);
         await interaction.reply({
           content: `✅ تم تعيين قناة المراقبة على <#${channel.id}>.\n> جارٍ مزامنة البيانات في الخلفية…`,
-          ephemeral: true,
+          ephemeral: false,
         });
         syncChannel(channel, data, cfg).catch((e) =>
           console.error("[sync error]", e),
@@ -666,7 +666,7 @@ async function handleSettingsInteraction(
         saveConfig(cfg);
         await interaction.reply({
           content: `✅ تم تعيين قناة الإشعارات على <#${channel.id}>.`,
-          ephemeral: true,
+          ephemeral: false,
         });
         break;
       }
@@ -677,7 +677,7 @@ async function handleSettingsInteraction(
         if (!Number.isInteger(n) || n < 1)
           return interaction.reply({
             content: "❌ أدخل رقماً صحيحاً أكبر من صفر.",
-            ephemeral: true,
+            ephemeral: false,
           });
 
         const old = cfg.reactionThreshold;
@@ -698,7 +698,7 @@ async function handleSettingsInteraction(
         }
         await interaction.reply({
           content: `✅ تم تعيين الهدف على **${n}** نقطة.${note}`,
-          ephemeral: true,
+          ephemeral: false,
         });
         break;
       }
@@ -708,13 +708,13 @@ async function handleSettingsInteraction(
         if (!Number.isInteger(n) || n < 1 || n > 1440)
           return interaction.reply({
             content: "❌ أدخل عدداً بين 1 و 1440 دقيقة.",
-            ephemeral: true,
+            ephemeral: false,
           });
         cfg.speedBonusMinutes = n;
         saveConfig(cfg);
         await interaction.reply({
           content: `✅ نافذة التفاعل السريع: **${n}** دقيقة.`,
-          ephemeral: true,
+          ephemeral: false,
         });
         break;
       }
@@ -724,14 +724,14 @@ async function handleSettingsInteraction(
         if (!Number.isInteger(n) || n < 1 || n > 365)
           return interaction.reply({
             content: "❌ أدخل عدداً بين 1 و 365.",
-            ephemeral: true,
+            ephemeral: false,
           });
         cfg.intervalDays = n;
         cfg.lastAnnouncedAt = Date.now(); // reset timer from now
         saveConfig(cfg);
         await interaction.reply({
           content: `✅ سيتم نشر إعلان أفضل صورة كل **${n}** يوم.\n> تم إعادة ضبط المؤقّت.`,
-          ephemeral: true,
+          ephemeral: false,
         });
         break;
       }
@@ -741,13 +741,13 @@ async function handleSettingsInteraction(
         if (!Number.isInteger(n) || n < 1 || n > 365)
           return interaction.reply({
             content: "❌ أدخل عدداً بين 1 و 365.",
-            ephemeral: true,
+            ephemeral: false,
           });
         cfg.retentionDays = n;
         saveConfig(cfg);
         await interaction.reply({
           content: `✅ مدة حفظ البيانات: **${n}** يوم.`,
-          ephemeral: true,
+          ephemeral: false,
         });
         break;
       }
@@ -757,28 +757,28 @@ async function handleSettingsInteraction(
         if (!owner)
           return interaction.reply({
             content: "⛔ هذا الخيار للمالك فقط.",
-            ephemeral: true,
+            ephemeral: false,
           });
         if (!SNOWFLAKE_RE.test(val))
           return interaction.reply({
             content: "❌ معرّف المستخدم غير صالح.",
-            ephemeral: true,
+            ephemeral: false,
           });
         if (val === cfg.ownerId)
           return interaction.reply({
             content: "❌ المالك لا يحتاج إلى إضافته كمشرف.",
-            ephemeral: true,
+            ephemeral: false,
           });
         if (cfg.modIds.includes(val))
           return interaction.reply({
             content: "⚠️ هذا المستخدم مشرف بالفعل.",
-            ephemeral: true,
+            ephemeral: false,
           });
         cfg.modIds.push(val);
         saveConfig(cfg);
         await interaction.reply({
           content: `✅ تمت إضافة <@${val}> كمشرف.`,
-          ephemeral: true,
+          ephemeral: false,
         });
         break;
       }
@@ -787,23 +787,23 @@ async function handleSettingsInteraction(
         if (!owner)
           return interaction.reply({
             content: "⛔ هذا الخيار للمالك فقط.",
-            ephemeral: true,
+            ephemeral: false,
           });
         if (!SNOWFLAKE_RE.test(val))
           return interaction.reply({
             content: "❌ معرّف المستخدم غير صالح.",
-            ephemeral: true,
+            ephemeral: false,
           });
         if (!cfg.modIds.includes(val))
           return interaction.reply({
             content: "⚠️ هذا المستخدم ليس مشرفاً.",
-            ephemeral: true,
+            ephemeral: false,
           });
         cfg.modIds = cfg.modIds.filter((id) => id !== val);
         saveConfig(cfg);
         await interaction.reply({
           content: `✅ تمت إزالة <@${val}> من قائمة المشرفين.`,
-          ephemeral: true,
+          ephemeral: false,
         });
         break;
       }

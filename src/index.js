@@ -186,7 +186,7 @@ client.on("interactionCreate", async (interaction) => {
       await interaction
         .reply({
           content: "❌ حدث خطأ غير متوقع. يرجى المحاولة مرة أخرى.",
-          ephemeral: true,
+          ephemeral: false,
         })
         .catch(() => null);
     }

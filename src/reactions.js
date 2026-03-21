@@ -15,16 +15,17 @@
  */
 
 const { getChannel, getUser, getMeta } = require("./storage");
-const { snowflakeToMs, checkGoal }     = require("./sync");
+const { snowflakeToMs, checkGoal } = require("./sync");
 
 async function onReactionAdd(reaction, user, client, config, data, saveDataFn) {
   if (user.bot) return;
 
   // Resolve partials — bail if Discord returns an error
   try {
-    if (reaction.partial)                 await reaction.fetch();
-    if (reaction.message.partial)         await reaction.message.fetch();
-    if (reaction.message.channel.partial) await reaction.message.channel.fetch();
+    if (reaction.partial) await reaction.fetch();
+    if (reaction.message.partial) await reaction.message.fetch();
+    if (reaction.message.channel.partial)
+      await reaction.message.channel.fetch();
   } catch {
     return;
   }
@@ -34,18 +35,19 @@ async function onReactionAdd(reaction, user, client, config, data, saveDataFn) {
   if (reaction.message.channel.id !== watchChannelId) return;
 
   // Only count media messages
-  const msg      = reaction.message;
-  const hasMedia = msg.attachments.size > 0 ||
+  const msg = reaction.message;
+  const hasMedia =
+    msg.attachments.size > 0 ||
     msg.embeds.some((e) => e.data?.type === "image" || e.image || e.thumbnail);
   if (!hasMedia) return;
 
   const messageId = msg.id;
-  const userId    = user.id;
-  const authorId  = msg.author?.id ?? null;
-  const postedAt  = snowflakeToMs(messageId);
+  const userId = user.id;
+  const authorId = msg.author?.id ?? null;
+  const postedAt = snowflakeToMs(messageId);
 
-  const ch         = getChannel(data, watchChannelId);
-  const meta       = getMeta(ch, messageId, authorId, postedAt, null);
+  const ch = getChannel(data, watchChannelId);
+  const meta = getMeta(ch, messageId, authorId, postedAt, null);
   const userRecord = getUser(ch, userId);
 
   // Track unique reactors on this message
@@ -55,19 +57,21 @@ async function onReactionAdd(reaction, user, client, config, data, saveDataFn) {
 
   // Credit the reactor — once per message per cycle; authors excluded
   const alreadyRewarded = userRecord.rewarded.includes(messageId);
-  const alreadyPending  = userRecord.pending.includes(messageId);
-  const isSelfReaction  = userId === authorId;
+  const alreadyPending = userRecord.pending.includes(messageId);
+  const isSelfReaction = userId === authorId;
 
   if (!alreadyRewarded && !alreadyPending && !isSelfReaction) {
     userRecord.pending.push(messageId);
-    userRecord.points      += 1;
+    userRecord.points += 1;
     userRecord.totalPoints += 1;
 
     saveDataFn(data);
 
     // Check if goal is reached
     if (notifyChannelId && userRecord.points >= config.reactionThreshold) {
-      const notifyChannel = await client.channels.fetch(notifyChannelId).catch(() => null);
+      const notifyChannel = await client.channels
+        .fetch(notifyChannelId)
+        .catch(() => null);
       await checkGoal(userId, userRecord, config, notifyChannel);
       saveDataFn(data);
     }

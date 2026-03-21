@@ -13,12 +13,12 @@
  * already counted can never be double-counted in a future sync.
  */
 
-const fs   = require("fs");
+const fs = require("fs");
 const path = require("path");
 
-const ROOT        = path.resolve(__dirname, "..");
+const ROOT = path.resolve(__dirname, "..");
 const CONFIG_PATH = path.join(ROOT, "config.json");
-const DATA_PATH   = path.join(ROOT, "data.json");
+const DATA_PATH = path.join(ROOT, "data.json");
 
 // ─────────────────────────────────────────────
 // Config
@@ -39,13 +39,13 @@ function validateConfig(raw) {
 
   return {
     token,
-    ownerId:            raw.ownerId.trim(),
-    modIds:             Array.isArray(raw.modIds)
-                          ? raw.modIds.filter((id) => typeof id === "string" && id.trim())
-                          : [],
-    watchChannelId:     str(raw.watchChannelId),
-    notifyChannelId:    str(raw.notifyChannelId),
-    reactionThreshold:  posInt(raw.reactionThreshold, 100),
+    ownerId: raw.ownerId.trim(),
+    modIds: Array.isArray(raw.modIds)
+      ? raw.modIds.filter((id) => typeof id === "string" && id.trim())
+      : [],
+    watchChannelId: str(raw.watchChannelId),
+    notifyChannelId: str(raw.notifyChannelId),
+    reactionThreshold: posInt(raw.reactionThreshold, 100),
   };
 }
 
@@ -84,11 +84,11 @@ function defaultUser() {
 
 function defaultMeta(authorId, postedAt, imageUrl = null) {
   return {
-    authorId:   authorId ?? null,
-    postedAt:   postedAt ?? Date.now(),
-    imageUrl:   imageUrl ?? null,
+    authorId: authorId ?? null,
+    postedAt: postedAt ?? Date.now(),
+    imageUrl: imageUrl ?? null,
     reactorIds: [],
-    syncedAt:   0,
+    syncedAt: 0,
   };
 }
 
@@ -99,10 +99,10 @@ function defaultMeta(authorId, postedAt, imageUrl = null) {
 function migrateUser(u) {
   if (!u || typeof u !== "object") return defaultUser();
   return {
-    points:      posNum(u.points, 0),
-    pending:     arr(u.pending),
-    rewarded:    arr(u.rewarded),
-    cycles:      posInt(u.cycles, 0),
+    points: posNum(u.points, 0),
+    pending: arr(u.pending),
+    rewarded: arr(u.rewarded),
+    cycles: posInt(u.cycles, 0),
     totalPoints: posNum(u.totalPoints, 0),
   };
 }
@@ -110,11 +110,11 @@ function migrateUser(u) {
 function migrateMeta(m) {
   if (!m || typeof m !== "object") return defaultMeta(null, 0);
   return {
-    authorId:   str(m.authorId),
-    postedAt:   posNum(m.postedAt, 0),
-    imageUrl:   str(m.imageUrl),
+    authorId: str(m.authorId),
+    postedAt: posNum(m.postedAt, 0),
+    imageUrl: str(m.imageUrl),
     reactorIds: arr(m.reactorIds),
-    syncedAt:   posNum(m.syncedAt, 0),
+    syncedAt: posNum(m.syncedAt, 0),
   };
 }
 
@@ -137,7 +137,11 @@ function migrateChannel(ch) {
 }
 
 function migrate(raw) {
-  if (raw?.channels && typeof raw.channels === "object" && !Array.isArray(raw.channels)) {
+  if (
+    raw?.channels &&
+    typeof raw.channels === "object" &&
+    !Array.isArray(raw.channels)
+  ) {
     const channels = {};
     for (const [cid, ch] of Object.entries(raw.channels))
       channels[cid] = migrateChannel(ch);
@@ -157,7 +161,9 @@ function loadData() {
     if (text) raw = JSON.parse(text);
   } catch (err) {
     if (err.code !== "ENOENT") {
-      console.warn(`[storage] data.json unreadable (${err.message}), starting fresh.`);
+      console.warn(
+        `[storage] data.json unreadable (${err.message}), starting fresh.`,
+      );
     }
   }
 
@@ -205,8 +211,8 @@ function getMeta(ch, msgId, authorId, postedAt, imageUrl) {
 // Permissions
 // ─────────────────────────────────────────────
 
-const isOwner   = (cfg, uid) => uid === cfg.ownerId;
-const isMod     = (cfg, uid) => cfg.modIds.includes(uid);
+const isOwner = (cfg, uid) => uid === cfg.ownerId;
+const isMod = (cfg, uid) => cfg.modIds.includes(uid);
 const isAllowed = (cfg, uid) => isOwner(cfg, uid) || isMod(cfg, uid);
 
 // ─────────────────────────────────────────────
@@ -225,8 +231,8 @@ function atomicWrite(filePath, content) {
 
 const posInt = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);
 const posNum = (v, d) => (Number.isFinite(v) && v >= 0 ? v : d);
-const str    = (v)    => (typeof v === "string" && v.trim() ? v.trim() : null);
-const arr    = (v)    => (Array.isArray(v) ? v : []);
+const str = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
+const arr = (v) => (Array.isArray(v) ? v : []);
 
 // ─────────────────────────────────────────────
 // Exports

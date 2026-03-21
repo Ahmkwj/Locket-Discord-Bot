@@ -23,8 +23,8 @@ const { makeURLSearchParams } = require("@discordjs/rest");
 
 const { getChannel, getUser, getMeta, saveData } = require("./storage");
 
-const DISCORD_EPOCH  = 1_420_070_400_000n;
-const BATCH          = 100; // Discord max per request
+const DISCORD_EPOCH = 1_420_070_400_000n;
+const BATCH = 100; // Discord max per request
 const PROGRESS_EVERY = 100; // edit status message every N messages
 
 // ─────────────────────────────────────────────
@@ -49,7 +49,11 @@ function emojiKey(emoji) {
 /** True if a raw REST message object contains an image or video attachment. */
 function messageHasMedia(raw) {
   if (Array.isArray(raw.attachments) && raw.attachments.length > 0) return true;
-  if (Array.isArray(raw.embeds) && raw.embeds.some((e) => e.type === "image" || e.image || e.thumbnail)) return true;
+  if (
+    Array.isArray(raw.embeds) &&
+    raw.embeds.some((e) => e.type === "image" || e.image || e.thumbnail)
+  )
+    return true;
   return false;
 }
 
@@ -82,7 +86,7 @@ async function fetchReactorIds(rest, channelId, msgId, key) {
 async function fetchPage(rest, channelId, opts = {}) {
   const params = { limit: opts.limit ?? BATCH };
   if (opts.before) params.before = opts.before;
-  if (opts.after)  params.after  = opts.after;
+  if (opts.after) params.after = opts.after;
 
   const result = await rest
     .get(Routes.channelMessages(channelId), {
@@ -99,14 +103,14 @@ async function fetchPage(rest, channelId, opts = {}) {
 // ─────────────────────────────────────────────
 
 async function processMessage(raw, ch, rest, channelId) {
-  const msgId    = raw.id;
+  const msgId = raw.id;
   const postedAt = snowflakeToMs(msgId);
   const authorId = raw.author?.id ?? null;
-  const now      = Date.now();
+  const now = Date.now();
 
   const imageUrl =
     Array.isArray(raw.attachments) && raw.attachments.length > 0
-      ? raw.attachments[0].url ?? null
+      ? (raw.attachments[0].url ?? null)
       : null;
 
   const meta = getMeta(ch, msgId, authorId, postedAt, imageUrl);
@@ -137,7 +141,7 @@ async function processMessage(raw, ch, rest, channelId) {
   }
 
   meta.reactorIds = [...reactorSet];
-  meta.syncedAt   = now;
+  meta.syncedAt = now;
 
   // Award one point per reactor (self-reactions excluded)
   const credited = [];
@@ -149,7 +153,7 @@ async function processMessage(raw, ch, rest, channelId) {
     if (user.rewarded.includes(msgId) || user.pending.includes(msgId)) continue;
 
     user.pending.push(msgId);
-    user.points      += 1;
+    user.points += 1;
     user.totalPoints += 1;
     credited.push(userId);
   }
@@ -172,8 +176,10 @@ async function processMessage(raw, ch, rest, channelId) {
 async function checkGoal(userId, userRecord, config, notifyChannel) {
   if (userRecord.points < config.reactionThreshold) return;
 
-  const completedCycles = Math.floor(userRecord.points / config.reactionThreshold);
-  const remainder       = userRecord.points % config.reactionThreshold;
+  const completedCycles = Math.floor(
+    userRecord.points / config.reactionThreshold,
+  );
+  const remainder = userRecord.points % config.reactionThreshold;
 
   for (let i = 0; i < completedCycles; i++) {
     userRecord.cycles += 1;
@@ -182,8 +188,8 @@ async function checkGoal(userId, userRecord, config, notifyChannel) {
       await notifyChannel
         .send(
           `🎉 <@${userId}> reached the goal of **${config.reactionThreshold}** reaction points!\n` +
-          `📈 All-time total: **${userRecord.totalPoints}** pts · Cycle **#${userRecord.cycles}** complete.\n` +
-          `Their score has been reset — the hunt begins again! 🔁`
+            `📈 All-time total: **${userRecord.totalPoints}** pts · Cycle **#${userRecord.cycles}** complete.\n` +
+            `Their score has been reset — the hunt begins again! 🔁`,
         )
         .catch(() => null);
     }
@@ -193,8 +199,8 @@ async function checkGoal(userId, userRecord, config, notifyChannel) {
   const rewardedSet = new Set(userRecord.rewarded);
   for (const id of userRecord.pending) rewardedSet.add(id);
   userRecord.rewarded = [...rewardedSet];
-  userRecord.pending  = [];
-  userRecord.points   = remainder;
+  userRecord.pending = [];
+  userRecord.points = remainder;
 }
 
 // ─────────────────────────────────────────────
@@ -221,16 +227,18 @@ async function sweepPendingGoals(ch, config, notifyChannel, data) {
 
 async function syncChannel(channel, data, config) {
   const channelId = channel.id;
-  const rest      = channel.client.rest;
-  const client    = channel.client;
-  const ch        = getChannel(data, channelId);
+  const rest = channel.client.rest;
+  const client = channel.client;
+  const ch = getChannel(data, channelId);
 
   const incremental = ch.lastSeenMessageId !== null;
 
   // ── Fetch notify channel once — reused for status + goal announcements ─────
   let notifyChannel = null;
   if (config.notifyChannelId) {
-    notifyChannel = await client.channels.fetch(config.notifyChannelId).catch(() => null);
+    notifyChannel = await client.channels
+      .fetch(config.notifyChannelId)
+      .catch(() => null);
     if (!notifyChannel) console.warn("[sync] notify channel not found");
   }
 
@@ -241,7 +249,7 @@ async function syncChannel(channel, data, config) {
       .send(
         incremental
           ? `🔄 Syncing <#${channelId}>... Checking for new messages since last run.`
-          : `🔄 Syncing <#${channelId}>... Full scan started — reading entire channel history. This may take a while ⏳`
+          : `🔄 Syncing <#${channelId}>... Full scan started — reading entire channel history. This may take a while ⏳`,
       )
       .catch(() => null);
   }
@@ -251,13 +259,16 @@ async function syncChannel(channel, data, config) {
   };
 
   let processed = 0;
-  let newestId  = ch.lastSeenMessageId;
+  let newestId = ch.lastSeenMessageId;
 
   const spinners = ["⏳", "🔄", "📡", "🔃"];
-  const spinner  = () => spinners[Math.floor(processed / PROGRESS_EVERY) % spinners.length];
+  const spinner = () =>
+    spinners[Math.floor(processed / PROGRESS_EVERY) % spinners.length];
 
   const reportProgress = async () => {
-    await editStatus(`${spinner()} Syncing <#${channelId}>... **${processed}** messages scanned so far...`);
+    await editStatus(
+      `${spinner()} Syncing <#${channelId}>... **${processed}** messages scanned so far...`,
+    );
   };
 
   // ── Shared scan loop body ──────────────────────────────────────────────────
@@ -318,10 +329,12 @@ async function syncChannel(channel, data, config) {
 
     await editStatus(
       `✅ **Sync complete** for <#${channelId}>!\n` +
-      `📊 **${processed}** messages scanned · **${memberCount}** members tracked.`
+        `📊 **${processed}** messages scanned · **${memberCount}** members tracked.`,
     );
   } catch (err) {
-    await editStatus(`❌ Sync failed for <#${channelId}>: ${String(err.message || err)}`);
+    await editStatus(
+      `❌ Sync failed for <#${channelId}>: ${String(err.message || err)}`,
+    );
     throw err;
   }
 }

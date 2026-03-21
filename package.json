@@ -1,7 +1,7 @@
 {
   "name": "locket-bot",
   "version": "2.0.0",
-  "description": "Discord bot that tracks photo reactions and blocks duplicate images.",
+  "description": "Discord bot that tracks photo reaction points in one channel.",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js"

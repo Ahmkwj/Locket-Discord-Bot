@@ -1,15 +1,9 @@
 {
   "ownerId": "775650520508661781",
-  "modIds": ["861797280143114240"],
+  "modIds": [
+    "861797280143114240"
+  ],
   "watchChannelId": "1475957030555746422",
-  "notifyChannelId": "1439028157696184421",
-  "reactionThreshold": 100,
-  "speedBonusMinutes": 60,
-  "intervalDays": 7,
-  "retentionDays": 30,
-  "weeklyEnabled": true,
-  "duplicateCheckEnabled": true,
-  "speedBonusEnabled": true,
-  "goalNotifyEnabled": true,
-  "leaderboardEnabled": true
+  "notifyChannelId": "1484871530969305199",
+  "reactionThreshold": 100
 }

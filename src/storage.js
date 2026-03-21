@@ -4,21 +4,21 @@
  * storage.js — config and data persistence
  *
  * config.json  : bot settings (token read from .env via DISCORD_TOKEN, never saved back)
- * data.json    : runtime state — channels, users, photo sigs, message metadata
+ * data.json    : runtime state — channels, users, and message metadata
  *
  * Both files live in the project ROOT (one level above src/).
  * Writes are atomic: write to .tmp → rename.
+ *
+ * Message data is kept forever — we never prune it, so a message that was
+ * already counted can never be double-counted in a future sync.
  */
 
-const fs = require("fs");
+const fs   = require("fs");
 const path = require("path");
 
-// Project root is one level above src/
-const ROOT = path.resolve(__dirname, "..");
+const ROOT        = path.resolve(__dirname, "..");
 const CONFIG_PATH = path.join(ROOT, "config.json");
-const DATA_PATH = path.join(ROOT, "data.json");
-
-const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000; // at most once per 6 h
+const DATA_PATH   = path.join(ROOT, "data.json");
 
 // ─────────────────────────────────────────────
 // Config
@@ -39,22 +39,13 @@ function validateConfig(raw) {
 
   return {
     token,
-    ownerId: raw.ownerId.trim(),
-    modIds: Array.isArray(raw.modIds)
-      ? raw.modIds.filter((id) => typeof id === "string" && id.trim())
-      : [],
-    watchChannelId: str(raw.watchChannelId),
-    notifyChannelId: str(raw.notifyChannelId),
-    reactionThreshold: posInt(raw.reactionThreshold, 100),
-    speedBonusMinutes: posInt(raw.speedBonusMinutes, 60),
-    intervalDays: posInt(raw.intervalDays, 7),
-    lastAnnouncedAt: posNum(raw.lastAnnouncedAt, 0),
-    retentionDays: posInt(raw.retentionDays, 30),
-    weeklyEnabled: bool(raw.weeklyEnabled, true),
-    duplicateCheckEnabled: bool(raw.duplicateCheckEnabled, true),
-    speedBonusEnabled: bool(raw.speedBonusEnabled, true),
-    goalNotifyEnabled: bool(raw.goalNotifyEnabled, true),
-    leaderboardEnabled: bool(raw.leaderboardEnabled, true),
+    ownerId:            raw.ownerId.trim(),
+    modIds:             Array.isArray(raw.modIds)
+                          ? raw.modIds.filter((id) => typeof id === "string" && id.trim())
+                          : [],
+    watchChannelId:     str(raw.watchChannelId),
+    notifyChannelId:    str(raw.notifyChannelId),
+    reactionThreshold:  posInt(raw.reactionThreshold, 100),
   };
 }
 
@@ -82,8 +73,6 @@ function saveConfig(cfg) {
 function defaultChannel() {
   return {
     lastSeenMessageId: null,
-    lastPrunedAt: 0,
-    photoSigs: {},
     messages: {},
     users: {},
   };
@@ -95,11 +84,11 @@ function defaultUser() {
 
 function defaultMeta(authorId, postedAt, imageUrl = null) {
   return {
-    authorId: authorId ?? null,
-    postedAt: postedAt ?? Date.now(),
-    imageUrl: imageUrl ?? null,
+    authorId:   authorId ?? null,
+    postedAt:   postedAt ?? Date.now(),
+    imageUrl:   imageUrl ?? null,
     reactorIds: [],
-    syncedAt: 0,
+    syncedAt:   0,
   };
 }
 
@@ -110,10 +99,10 @@ function defaultMeta(authorId, postedAt, imageUrl = null) {
 function migrateUser(u) {
   if (!u || typeof u !== "object") return defaultUser();
   return {
-    points: posNum(u.points, 0),
-    pending: arr(u.pending),
-    rewarded: arr(u.rewarded),
-    cycles: posInt(u.cycles, 0),
+    points:      posNum(u.points, 0),
+    pending:     arr(u.pending),
+    rewarded:    arr(u.rewarded),
+    cycles:      posInt(u.cycles, 0),
     totalPoints: posNum(u.totalPoints, 0),
   };
 }
@@ -121,11 +110,11 @@ function migrateUser(u) {
 function migrateMeta(m) {
   if (!m || typeof m !== "object") return defaultMeta(null, 0);
   return {
-    authorId: str(m.authorId),
-    postedAt: posNum(m.postedAt, 0),
-    imageUrl: str(m.imageUrl),
+    authorId:   str(m.authorId),
+    postedAt:   posNum(m.postedAt, 0),
+    imageUrl:   str(m.imageUrl),
     reactorIds: arr(m.reactorIds),
-    syncedAt: posNum(m.syncedAt, 0),
+    syncedAt:   posNum(m.syncedAt, 0),
   };
 }
 
@@ -135,40 +124,20 @@ function migrateChannel(ch) {
   const users = {};
   for (const [uid, u] of Object.entries(ch.users ?? {}))
     users[uid] = migrateUser(u);
+
   const messages = {};
   for (const [mid, m] of Object.entries(ch.messages ?? {}))
     messages[mid] = migrateMeta(m);
 
-  // Back-compat: old array-based photoSigs / photoSignatures
-  const photoSigs =
-    ch.photoSigs && typeof ch.photoSigs === "object" ? { ...ch.photoSigs } : {};
-  if (Array.isArray(ch.photoSignatures)) {
-    for (const item of ch.photoSignatures) {
-      if (!item) continue;
-      const sig = typeof item === "string" ? item : item.sig;
-      const addedAt =
-        typeof item === "object" && typeof item.addedAt === "number"
-          ? item.addedAt
-          : Date.now();
-      if (sig && !photoSigs[sig]) photoSigs[sig] = { messageId: null, addedAt };
-    }
-  }
-
   return {
     lastSeenMessageId: str(ch.lastSeenMessageId),
-    lastPrunedAt: posNum(ch.lastPrunedAt, 0),
-    photoSigs,
     messages,
     users,
   };
 }
 
 function migrate(raw) {
-  if (
-    raw?.channels &&
-    typeof raw.channels === "object" &&
-    !Array.isArray(raw.channels)
-  ) {
+  if (raw?.channels && typeof raw.channels === "object" && !Array.isArray(raw.channels)) {
     const channels = {};
     for (const [cid, ch] of Object.entries(raw.channels))
       channels[cid] = migrateChannel(ch);
@@ -182,23 +151,18 @@ function migrate(raw) {
 // ─────────────────────────────────────────────
 
 function loadData() {
-  // data.json may be missing, empty, or contain invalid JSON — handle all cases
   let raw = null;
   try {
     const text = fs.readFileSync(DATA_PATH, "utf8").trim();
-    if (text) raw = JSON.parse(text); // SyntaxError if corrupt
+    if (text) raw = JSON.parse(text);
   } catch (err) {
     if (err.code !== "ENOENT") {
-      // File exists but is empty or corrupt — log and start fresh
-      console.warn(
-        `[storage] data.json unreadable (${err.message}), starting fresh.`,
-      );
+      console.warn(`[storage] data.json unreadable (${err.message}), starting fresh.`);
     }
   }
 
   const data = migrate(raw ?? {});
 
-  // Always ensure the file exists on disk with valid JSON
   if (!fs.existsSync(DATA_PATH)) {
     try {
       atomicWrite(DATA_PATH, JSON.stringify(data, null, 2));
@@ -238,62 +202,12 @@ function getMeta(ch, msgId, authorId, postedAt, imageUrl) {
 }
 
 // ─────────────────────────────────────────────
-// Pruning
-// ─────────────────────────────────────────────
-
-function pruneChannel(ch, retentionDays, force = false) {
-  const now = Date.now();
-  if (!force && now - ch.lastPrunedAt < PRUNE_INTERVAL_MS) return false;
-
-  ch.lastPrunedAt = now;
-  const cutoff = now - retentionDays * 24 * 60 * 60 * 1000;
-  let changed = false;
-
-  for (const [sig, e] of Object.entries(ch.photoSigs)) {
-    if (e.addedAt < cutoff) {
-      delete ch.photoSigs[sig];
-      changed = true;
-    }
-  }
-
-  const pruned = new Set();
-  for (const [mid, m] of Object.entries(ch.messages)) {
-    if (m.postedAt < cutoff) {
-      delete ch.messages[mid];
-      pruned.add(mid);
-      changed = true;
-    }
-  }
-
-  if (pruned.size > 0) {
-    for (const u of Object.values(ch.users)) {
-      const pb = u.pending.length,
-        rb = u.rewarded.length;
-      u.pending = u.pending.filter((id) => !pruned.has(id));
-      u.rewarded = u.rewarded.filter((id) => !pruned.has(id));
-      if (u.pending.length !== pb || u.rewarded.length !== rb) changed = true;
-    }
-  }
-
-  return changed;
-}
-
-// ─────────────────────────────────────────────
 // Permissions
 // ─────────────────────────────────────────────
 
-const isOwner = (cfg, uid) => uid === cfg.ownerId;
-const isMod = (cfg, uid) => cfg.modIds.includes(uid);
+const isOwner   = (cfg, uid) => uid === cfg.ownerId;
+const isMod     = (cfg, uid) => cfg.modIds.includes(uid);
 const isAllowed = (cfg, uid) => isOwner(cfg, uid) || isMod(cfg, uid);
-
-// ─────────────────────────────────────────────
-// Points
-// ─────────────────────────────────────────────
-
-function reactionPoints(postedAt, reactedAt, cfg) {
-  if (!cfg.speedBonusEnabled) return 1;
-  return reactedAt - postedAt <= cfg.speedBonusMinutes * 60 * 1000 ? 2 : 1;
-}
 
 // ─────────────────────────────────────────────
 // Atomic write
@@ -311,9 +225,8 @@ function atomicWrite(filePath, content) {
 
 const posInt = (v, d) => (Number.isInteger(v) && v > 0 ? v : d);
 const posNum = (v, d) => (Number.isFinite(v) && v >= 0 ? v : d);
-const bool = (v, d) => (typeof v === "boolean" ? v : d);
-const str = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
-const arr = (v) => (Array.isArray(v) ? v : []);
+const str    = (v)    => (typeof v === "string" && v.trim() ? v.trim() : null);
+const arr    = (v)    => (Array.isArray(v) ? v : []);
 
 // ─────────────────────────────────────────────
 // Exports
@@ -327,32 +240,10 @@ module.exports = {
   getChannel,
   getUser,
   getMeta,
-  pruneChannel,
   isOwner,
   isMod,
   isAllowed,
-  reactionPoints,
   defaultChannel,
   defaultUser,
   defaultMeta,
 };
-
-/**
- * @typedef {{ token:string, ownerId:string, modIds:string[],
- *   watchChannelId:string|null, notifyChannelId:string|null,
- *   reactionThreshold:number, speedBonusMinutes:number,
- *   intervalDays:number, lastAnnouncedAt:number, retentionDays:number,
- *   weeklyEnabled:boolean, duplicateCheckEnabled:boolean,
- *   speedBonusEnabled:boolean, goalNotifyEnabled:boolean, leaderboardEnabled:boolean,
- * }} BotConfig
- *
- * @typedef {{ points:number, pending:string[], rewarded:string[], cycles:number, totalPoints:number }} UserData
- *
- * @typedef {{ authorId:string|null, postedAt:number, imageUrl:string|null, reactorIds:string[], syncedAt:number }} MessageMeta
- *
- * @typedef {{ lastSeenMessageId:string|null, lastPrunedAt:number,
- *   photoSigs:Record<string,{messageId:string|null,addedAt:number}>,
- *   messages:Record<string,MessageMeta>, users:Record<string,UserData> }} ChannelData
- *
- * @typedef {{ channels:Record<string,ChannelData> }} BotData
- */

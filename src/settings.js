@@ -1,52 +1,8 @@
-/**
- • Name: Ahmed Khawaja  
- • Student ID: 60104808  
- • Created On 03-03-2026-06h-43m
-*/
-
 "use strict";
-
-/**
- * settings.js — the entire admin UI
- *
- * Single entry point: user types  setlocket
- * Bot replies with a rich embed showing all current settings + two rows of buttons.
- *
- * ┌─────────────────────────────────────────────────────────┐
- * │  PANEL LAYOUT                                           │
- * │                                                         │
- * │  Row 1 — Channels                                       │
- * │    [📺 Watch Channel]  [🔔 Notify Channel]              │
- * │                                                         │
- * │  Row 2 — Numbers                                        │
- * │    [🎯 Goal]  [⚡ Speed Window]  [📅 Interval (days)]   │
- * │    [🗄️ Retention (days)]                                 │
- * │                                                         │
- * │  Row 3 — Feature toggles (on/off, instant)              │
- * │    [Best-Photo ON/OFF]  [Dup-Check ON/OFF]              │
- * │    [Speed-Bonus ON/OFF] [Goal-Notify ON/OFF]            │
- * │                                                         │
- * │  Row 4 — Actions                                        │
- * │    [🔄 Reset Leaderboard]  [📢 Post Best Photo Now]     │
- * │    [📊 Dashboard]                                       │
- * │                                                         │
- * │  Row 5 — Mods (owner only)                              │
- * │    [➕ Add Mod]  [➖ Remove Mod]  [📋 List Mods]        │
- * └─────────────────────────────────────────────────────────┘
- *
- * Each number/channel button opens a Discord Modal.
- * Toggle buttons flip the boolean immediately with no modal.
- * All interaction replies are visible in the channel.
- * After every action the embed updates in-place.
- *
- * Permission model:
- *   Owner  → everything
- *   Mod    → rows 1–4  (channels, numbers, toggles, actions)
- *   Others → blocked
- */
 
 const {
   ActionRowBuilder,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ModalBuilder,
@@ -57,263 +13,124 @@ const {
 
 const { buildEmbed } = require("./embeds");
 const { syncChannel } = require("./sync");
-const { sendWeeklyAnnouncementNow } = require("./weekly");
 const { getChannel, isOwner, isAllowed } = require("./storage");
 
-// ─────────────────────────────────────────────────────
-// ID constants — keep short to stay under Discord's 100-char limit
-// ─────────────────────────────────────────────────────
-
 const B = {
-  // Row 1 — channels
   WATCH: "s_watch",
   NOTIFY: "s_notify",
-  // Row 2 — numbers
-  THRESHOLD: "s_thresh",
-  SPEED: "s_speed",
-  INTERVAL: "s_interval",
-  RETENTION: "s_retention",
-  // Row 3 — toggles
-  T_WEEKLY: "s_t_weekly",
-  T_DUPCHECK: "s_t_dup",
-  T_SPEEDBONUS: "s_t_spd",
-  T_GOALNOTIFY: "s_t_goal",
-  // Row 4 — actions
+  THRESHOLD: "s_goal",
   RESET: "s_reset",
-  POST_NOW: "s_postnow",
   DASHBOARD: "s_dash",
-  // Row 5 — mods (owner only)
+  TOP_PHOTO: "s_topphoto",
   MOD_ADD: "s_modadd",
   MOD_REMOVE: "s_modrem",
   MOD_LIST: "s_modlist",
 };
 
+// These IDs are owned by the awaitMessageComponent collector inside B.TOP_PHOTO.
+// They must NOT be handled by the normal switch or the error handler will
+// double-reply and crash the collector.
+const COLLECTOR_IDS = new Set(["confirm_top", "cancel_top"]);
+
 const M = {
   WATCH: "m_watch",
   NOTIFY: "m_notify",
-  THRESHOLD: "m_thresh",
-  SPEED: "m_speed",
-  INTERVAL: "m_interval",
-  RETENTION: "m_retention",
+  THRESHOLD: "m_goal",
   MOD_ADD: "m_modadd",
   MOD_REMOVE: "m_modrem",
 };
 
-const F = "f_val"; // single text-input field id used in all modals
-
+const F = "f_val";
 const SNOWFLAKE_RE = /^\d{17,20}$/;
 
-// ─────────────────────────────────────────────────────
-// Settings embed
-// ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// Embeds
+// ─────────────────────────────────────────────
 
-/** @param {import("./storage").BotConfig} cfg */
 function buildSettingsEmbed(cfg) {
-  const on = "🟢 مفعّل";
-  const off = "🔴 معطّل";
-  const ch = (id) => (id ? `<#${id}>` : "—  *(غير محدد)*");
-
-  const lastAnn = cfg.lastAnnouncedAt
-    ? `<t:${Math.floor(cfg.lastAnnouncedAt / 1000)}:R>`
-    : "لم يتم بعد";
-  const nextAnn = cfg.lastAnnouncedAt
-    ? `<t:${Math.floor((cfg.lastAnnouncedAt + cfg.intervalDays * 86_400_000) / 1000)}:R>`
-    : "—";
+  const ch = (id) => (id ? `<#${id}>` : "Not set");
+  const mods = cfg.modIds.length
+    ? cfg.modIds.map((id) => `<@${id}>`).join(", ")
+    : "None";
 
   return buildEmbed({
-    title: "⚙️  لوحة إعدادات البوت",
-    description:
-      "استخدم الأزرار أدناه للتحكم الكامل في البوت.\n" +
-      "كل التغييرات تُطبَّق فوراً وتُحفظ تلقائياً.",
+    title: "Locket Control Panel",
+    description: "Use the buttons below to update bot settings.",
     fields: [
-      // Row A — channels
-      {
-        name: "📺  قناة المراقبة",
-        value: ch(cfg.watchChannelId),
-        inline: true,
-      },
-      {
-        name: "🔔  قناة الإشعارات",
-        value: ch(cfg.notifyChannelId),
-        inline: true,
-      },
-      { name: "\u200b", value: "\u200b", inline: true },
-      // Row B — numbers
-      {
-        name: "🎯  الهدف",
-        value: `**${cfg.reactionThreshold}** نقطة`,
-        inline: true,
-      },
-      {
-        name: "⚡  نافذة التفاعل السريع",
-        value: `**${cfg.speedBonusMinutes}** دقيقة = ×2 نقطة`,
-        inline: true,
-      },
-      {
-        name: "📅  فترة إعلان أفضل صورة",
-        value: `كل **${cfg.intervalDays}** يوم`,
-        inline: true,
-      },
-      {
-        name: "🗄️  مدة حفظ البيانات",
-        value: `**${cfg.retentionDays}** يوم`,
-        inline: true,
-      },
-      { name: "📢  آخر إعلان", value: lastAnn, inline: true },
-      { name: "⏭️  الإعلان القادم", value: nextAnn, inline: true },
-      // Row C — toggles
-      {
-        name: "🏅  إعلان أفضل صورة",
-        value: cfg.weeklyEnabled ? on : off,
-        inline: true,
-      },
-      {
-        name: "🚫  كشف الصور المكررة",
-        value: cfg.duplicateCheckEnabled ? on : off,
-        inline: true,
-      },
-      {
-        name: "⚡  مكافأة التفاعل السريع",
-        value: cfg.speedBonusEnabled ? on : off,
-        inline: true,
-      },
-      {
-        name: "🏆  إشعار إتمام الهدف",
-        value: cfg.goalNotifyEnabled ? on : off,
-        inline: true,
-      },
-      // Row D — mods
-      {
-        name: "👥  المشرفون",
-        value: cfg.modIds.length
-          ? cfg.modIds.map((id) => `<@${id}>`).join("  ")
-          : "لا يوجد مشرفون",
-        inline: false,
-      },
+      { name: "Watch Channel", value: ch(cfg.watchChannelId), inline: true },
+      { name: "Notify Channel", value: ch(cfg.notifyChannelId), inline: true },
+      { name: "Goal", value: `${cfg.reactionThreshold} points`, inline: true },
+      { name: "Mods", value: mods, inline: false },
     ],
-    footer: `المالك: ${cfg.ownerId}  •  اكتب setlocket لإعادة فتح هذه اللوحة`,
+    footer: `Owner: ${cfg.ownerId} | Type setlocket to reopen this panel`,
   });
 }
 
-// ─────────────────────────────────────────────────────
-// Dashboard embed (leaderboard)
-// ─────────────────────────────────────────────────────
-
-/** @param {import("./storage").BotConfig} cfg @param {import("./storage").BotData} data */
 function buildDashboardEmbed(cfg, data) {
-  const { getChannel } = require("./storage");
   if (!cfg.watchChannelId) {
     return buildEmbed({
-      title: "📊  لوحة الصدارة",
-      description: "لم يتم تعيين قناة مراقبة بعد.",
+      title: "Leaderboard",
+      description: "Watch channel is not set.",
     });
   }
 
   const ch = getChannel(data, cfg.watchChannelId);
   const medals = ["🥇", "🥈", "🥉"];
-
   const entries = Object.entries(ch.users)
-    .map(([uid, u]) => ({
-      uid,
-      points: u.points,
-      cycles: u.cycles,
-      total: u.totalPoints,
-    }))
+    .map(([uid, u]) => ({ uid, points: u.points, cycles: u.cycles }))
     .filter((e) => e.points > 0 || e.cycles > 0)
     .sort((a, b) => b.points - a.points || b.cycles - a.cycles)
     .slice(0, 20);
 
   if (entries.length === 0) {
-    return buildEmbed({
-      title: "📊  لوحة الصدارة",
-      description:
-        "لا يوجد بيانات بعد.\nيبدأ التسجيل فور أول تفاعل على صورة. 🌟",
-    });
+    return buildEmbed({ title: "Leaderboard", description: "No scores yet." });
   }
 
   const lines = entries.map(({ uid, points, cycles }, i) => {
-    const medal = medals[i] ?? `**${i + 1}.**`;
-    const cycStr = cycles > 0 ? `  *(${cycles} جولة)*` : "";
-    return `${medal}  <@${uid}> — **${points}** نقطة${cycStr}`;
+    const rank = medals[i] ?? `${i + 1}.`;
+    const cyclesText = cycles > 0 ? ` | Cycles: ${cycles}` : "";
+    return `${rank} <@${uid}> — **${points}** pts${cyclesText}`;
   });
 
   return buildEmbed({
-    title: "📊  لوحة الصدارة",
+    title: "Leaderboard",
     description: lines.join("\n"),
     fields: [
       {
-        name: "🎯  الهدف الحالي",
-        value: `${cfg.reactionThreshold} نقطة`,
-        inline: true,
-      },
-      {
-        name: "⚡  المكافأة السريعة",
-        value: `×2 خلال أول ${cfg.speedBonusMinutes} دقيقة`,
+        name: "Current Goal",
+        value: `${cfg.reactionThreshold} points`,
         inline: true,
       },
     ],
-    footer: "يتحدث فور كل تفاعل",
+    footer: "Updates on each reaction",
   });
 }
 
-// ─────────────────────────────────────────────────────
-// Action rows
-// ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// Button rows
+// ─────────────────────────────────────────────
 
-/** @param {import("./storage").BotConfig} cfg @param {boolean} ownerViewing */
 function buildRows(cfg, ownerViewing) {
-  const tog = (enabled) =>
-    enabled ? ButtonStyle.Success : ButtonStyle.Secondary;
-
   const row1 = new ActionRowBuilder().addComponents(
-    btn(B.WATCH, "📺 قناة المراقبة", ButtonStyle.Primary),
-    btn(B.NOTIFY, "🔔 قناة الإشعارات", ButtonStyle.Primary),
+    btn(B.WATCH, "Set Watch Channel", ButtonStyle.Primary),
+    btn(B.NOTIFY, "Set Notify Channel", ButtonStyle.Primary),
+    btn(B.THRESHOLD, "Set Goal", ButtonStyle.Primary),
   );
 
   const row2 = new ActionRowBuilder().addComponents(
-    btn(B.THRESHOLD, "🎯 الهدف", ButtonStyle.Primary),
-    btn(B.SPEED, "⚡ نافذة التفاعل السريع", ButtonStyle.Primary),
-    btn(B.INTERVAL, "📅 فترة الإعلان", ButtonStyle.Primary),
-    btn(B.RETENTION, "🗄️ مدة حفظ البيانات", ButtonStyle.Secondary),
+    btn(B.RESET, "Reset Scores", ButtonStyle.Danger),
+    btn(B.DASHBOARD, "View Leaderboard", ButtonStyle.Secondary),
+    btn(B.TOP_PHOTO, "🏆 Top Photo", ButtonStyle.Success),
   );
 
-  const row3 = new ActionRowBuilder().addComponents(
-    btn(
-      B.T_WEEKLY,
-      cfg.weeklyEnabled ? "🏅 إعلان أفضل صورة ✓" : "🏅 إعلان أفضل صورة ✗",
-      tog(cfg.weeklyEnabled),
-    ),
-    btn(
-      B.T_DUPCHECK,
-      cfg.duplicateCheckEnabled ? "🚫 كشف المكررات ✓" : "🚫 كشف المكررات ✗",
-      tog(cfg.duplicateCheckEnabled),
-    ),
-    btn(
-      B.T_SPEEDBONUS,
-      cfg.speedBonusEnabled ? "⚡ مكافأة سريعة ✓" : "⚡ مكافأة سريعة ✗",
-      tog(cfg.speedBonusEnabled),
-    ),
-    btn(
-      B.T_GOALNOTIFY,
-      cfg.goalNotifyEnabled ? "🏆 إشعار الهدف ✓" : "🏆 إشعار الهدف ✗",
-      tog(cfg.goalNotifyEnabled),
-    ),
-  );
-
-  const row4 = new ActionRowBuilder().addComponents(
-    btn(B.RESET, "🔄 إعادة ضبط الصدارة", ButtonStyle.Danger),
-    btn(B.POST_NOW, "📢 نشر أفضل صورة الآن", ButtonStyle.Success),
-    btn(B.DASHBOARD, "📊 الصدارة", ButtonStyle.Secondary),
-  );
-
-  const rows = [row1, row2, row3, row4];
+  const rows = [row1, row2];
 
   if (ownerViewing) {
     rows.push(
       new ActionRowBuilder().addComponents(
-        btn(B.MOD_ADD, "➕ إضافة مشرف", ButtonStyle.Secondary),
-        btn(B.MOD_REMOVE, "➖ إزالة مشرف", ButtonStyle.Secondary),
-        btn(B.MOD_LIST, "📋 قائمة المشرفين", ButtonStyle.Secondary),
+        btn(B.MOD_ADD, "Add Mod", ButtonStyle.Secondary),
+        btn(B.MOD_REMOVE, "Remove Mod", ButtonStyle.Secondary),
+        btn(B.MOD_LIST, "List Mods", ButtonStyle.Secondary),
       ),
     );
   }
@@ -321,12 +138,12 @@ function buildRows(cfg, ownerViewing) {
   return rows;
 }
 
+// ─────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────
+
 const btn = (id, label, style) =>
   new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style);
-
-// ─────────────────────────────────────────────────────
-// Modal factories
-// ─────────────────────────────────────────────────────
 
 function modal(customId, title, label, placeholder, minLen = 1, maxLen = 20) {
   return new ModalBuilder()
@@ -346,14 +163,10 @@ function modal(customId, title, label, placeholder, minLen = 1, maxLen = 20) {
     );
 }
 
-// ─────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────
-
 async function resolveChannel(interaction, client, rawId) {
   if (!SNOWFLAKE_RE.test(rawId)) {
     await interaction.reply({
-      content: "❌ معرّف الروم غير صالح — يجب أن يكون رقماً من 17 إلى 20 خانة.",
+      content: "Invalid channel ID.",
       ephemeral: false,
     });
     return null;
@@ -361,7 +174,7 @@ async function resolveChannel(interaction, client, rawId) {
   const ch = await client.channels.fetch(rawId).catch(() => null);
   if (!ch) {
     await interaction.reply({
-      content: "❌ لم يتم العثور على الروم أو البوت لا يملك صلاحية الوصول.",
+      content: "Channel not found or inaccessible.",
       ephemeral: false,
     });
     return null;
@@ -369,7 +182,6 @@ async function resolveChannel(interaction, client, rawId) {
   return ch;
 }
 
-/** Refresh the settings embed in the original message. */
 async function refreshPanel(interaction, cfg, ownerViewing) {
   await interaction.message
     ?.edit({
@@ -379,15 +191,45 @@ async function refreshPanel(interaction, cfg, ownerViewing) {
     .catch(() => null);
 }
 
-// ─────────────────────────────────────────────────────
-// Public: open settings panel
-// ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// Top-photo finder
+// Tries candidates in order until one has a reachable image URL.
+// Returns null if nothing found.
+// ─────────────────────────────────────────────
 
-/**
- * Called when an allowed user sends "setlocket".
- * @param {import("discord.js").Message}  message
- * @param {import("./storage").BotConfig} cfg
- */
+async function findTopPhoto(candidates, watchCh) {
+  for (const [msgId, meta] of candidates) {
+    let msg;
+    try {
+      msg = await watchCh.messages.fetch(msgId);
+    } catch {
+      continue; // message was deleted — try next
+    }
+
+    // Prefer live attachment URL (never expires) → embed image → stored URL
+    const url =
+      msg.attachments.first()?.url ??
+      msg.embeds.find((e) => e.image?.url)?.image?.url ??
+      msg.embeds.find((e) => e.thumbnail?.url)?.thumbnail?.url ??
+      (meta.imageUrl || null);
+
+    if (!url) continue;
+
+    // Total emoji reactions (sum of all reaction counts on this message)
+    const totalReactions = msg.reactions.cache.reduce(
+      (sum, r) => sum + r.count,
+      0,
+    );
+
+    return { msgId, meta, msg, url, totalReactions };
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────
+// Command entry point (setlocket text trigger)
+// ─────────────────────────────────────────────
+
 async function handleSettingsCommand(message, cfg) {
   if (!isAllowed(cfg, message.author.id)) return;
   const owner = isOwner(cfg, message.author.id);
@@ -398,18 +240,10 @@ async function handleSettingsCommand(message, cfg) {
   });
 }
 
-// ─────────────────────────────────────────────────────
-// Public: interaction handler  (buttons + modal submits)
-// ─────────────────────────────────────────────────────
+// ─────────────────────────────────────────────
+// Interaction handler (buttons + modals)
+// ─────────────────────────────────────────────
 
-/**
- * @param {import("discord.js").Interaction} interaction
- * @param {import("discord.js").Client}      client
- * @param {import("./storage").BotConfig}    cfg
- * @param {import("./storage").BotData}      data
- * @param {Function} saveConfig
- * @param {Function} saveData
- */
 async function handleSettingsInteraction(
   interaction,
   client,
@@ -418,10 +252,14 @@ async function handleSettingsInteraction(
   saveConfig,
   saveData,
 ) {
-  // Permission gate
+  // ── Collector-owned buttons — do NOT touch them here. The awaitMessageComponent
+  //    collector inside B.TOP_PHOTO will call i.update() within milliseconds.
+  //    If we reply here first, that update would throw "already replied".
+  if (interaction.isButton() && COLLECTOR_IDS.has(interaction.customId)) return;
+
   if (!isAllowed(cfg, interaction.user.id)) {
     await interaction.reply({
-      content: "⛔ ليس لديك صلاحية للوصول إلى هذه الإعدادات.",
+      content: "You are not allowed to use this panel.",
       ephemeral: false,
     });
     return;
@@ -429,121 +267,50 @@ async function handleSettingsInteraction(
 
   const owner = isOwner(cfg, interaction.user.id);
 
-  // ── BUTTONS ────────────────────────────────────────────────────────────────
+  // ── Buttons ────────────────────────────────────────────────────────────────
+
   if (interaction.isButton()) {
     switch (interaction.customId) {
-      // ── Channels (open modals) ─────────────────────────────────────────────
       case B.WATCH:
         return interaction.showModal(
           modal(
             M.WATCH,
-            "تعيين قناة المراقبة",
-            "معرّف الروم",
-            "مثال: 1234567890123456789",
+            "Set Watch Channel",
+            "Channel ID",
+            "123456789012345678",
             17,
             20,
           ),
         );
+
       case B.NOTIFY:
         return interaction.showModal(
           modal(
             M.NOTIFY,
-            "تعيين قناة الإشعارات",
-            "معرّف الروم",
-            "مثال: 1234567890123456789",
+            "Set Notify Channel",
+            "Channel ID",
+            "123456789012345678",
             17,
             20,
           ),
         );
 
-      // ── Numbers (open modals) ──────────────────────────────────────────────
       case B.THRESHOLD:
         return interaction.showModal(
           modal(
             M.THRESHOLD,
-            "تغيير الهدف",
-            `عدد النقاط المطلوبة (الحالي: ${cfg.reactionThreshold})`,
-            "مثال: 100",
+            "Set Goal",
+            `Goal points (current: ${cfg.reactionThreshold})`,
+            "100",
             1,
             6,
           ),
         );
-      case B.SPEED:
-        return interaction.showModal(
-          modal(
-            M.SPEED,
-            "نافذة التفاعل السريع",
-            `دقائق من النشر (الحالي: ${cfg.speedBonusMinutes})`,
-            "1 – 1440",
-            1,
-            4,
-          ),
-        );
-      case B.INTERVAL:
-        return interaction.showModal(
-          modal(
-            M.INTERVAL,
-            "فترة إعلان أفضل صورة",
-            `عدد الأيام (الحالي: ${cfg.intervalDays})`,
-            "1 – 365",
-            1,
-            3,
-          ),
-        );
-      case B.RETENTION:
-        return interaction.showModal(
-          modal(
-            M.RETENTION,
-            "مدة حفظ البيانات (أيام)",
-            `عدد الأيام (الحالي: ${cfg.retentionDays})`,
-            "1 – 365",
-            1,
-            3,
-          ),
-        );
 
-      // ── Toggles (instant, no modal) ────────────────────────────────────────
-      case B.T_WEEKLY:
-        cfg.weeklyEnabled = !cfg.weeklyEnabled;
-        saveConfig(cfg);
-        await interaction.reply({
-          content: `✅ إعلان أفضل صورة: **${cfg.weeklyEnabled ? "مفعّل" : "معطّل"}**`,
-          ephemeral: false,
-        });
-        return refreshPanel(interaction, cfg, owner);
-
-      case B.T_DUPCHECK:
-        cfg.duplicateCheckEnabled = !cfg.duplicateCheckEnabled;
-        saveConfig(cfg);
-        await interaction.reply({
-          content: `✅ كشف الصور المكررة: **${cfg.duplicateCheckEnabled ? "مفعّل" : "معطّل"}**`,
-          ephemeral: false,
-        });
-        return refreshPanel(interaction, cfg, owner);
-
-      case B.T_SPEEDBONUS:
-        cfg.speedBonusEnabled = !cfg.speedBonusEnabled;
-        saveConfig(cfg);
-        await interaction.reply({
-          content: `✅ مكافأة التفاعل السريع: **${cfg.speedBonusEnabled ? "مفعّلة" : "معطّلة"}**`,
-          ephemeral: false,
-        });
-        return refreshPanel(interaction, cfg, owner);
-
-      case B.T_GOALNOTIFY:
-        cfg.goalNotifyEnabled = !cfg.goalNotifyEnabled;
-        saveConfig(cfg);
-        await interaction.reply({
-          content: `✅ إشعار إتمام الهدف: **${cfg.goalNotifyEnabled ? "مفعّل" : "معطّل"}**`,
-          ephemeral: false,
-        });
-        return refreshPanel(interaction, cfg, owner);
-
-      // ── Actions ────────────────────────────────────────────────────────────
       case B.RESET: {
         if (!cfg.watchChannelId) {
           return interaction.reply({
-            content: "❌ لم يتم تعيين قناة مراقبة بعد.",
+            content: "Watch channel is not set.",
             ephemeral: false,
           });
         }
@@ -554,79 +321,174 @@ async function handleSettingsInteraction(
         }
         saveData(data);
         await interaction.reply({
-          content:
-            "✅ **تمت إعادة ضبط لوحة الصدارة.**\n> الجولات المكتملة والنقاط الإجمالية محفوظة.",
+          content: "All scores have been reset.",
           ephemeral: false,
         });
         return refreshPanel(interaction, cfg, owner);
       }
 
-      case B.POST_NOW: {
-        const result = await sendWeeklyAnnouncementNow(
-          client,
-          cfg,
-          data,
-          saveConfig,
-        ).catch((err) => ({ ok: false, error: err.message || "unknown" }));
-        if (result.ok) {
-          await interaction.reply({
-            content: result.noWinner
-              ? "✅ تم إرسال الإعلان: لا يوجد فائز في هذه الفترة."
-              : "✅ تم نشر إعلان أفضل صورة في قناة المراقبة.",
-            ephemeral: false,
-          });
-        } else {
-          const msg =
-            result.error === "no_watch_channel"
-              ? "❌ لم يتم تعيين قناة مراقبة بعد."
-              : result.error === "weekly_disabled"
-                ? "❌ إعلان أفضل صورة معطّل من الإعدادات."
-                : result.error === "channel_unavailable"
-                  ? "❌ تعذّر الوصول إلى قناة المراقبة."
-                  : `❌ حدث خطأ: ${result.error}`;
-          await interaction.reply({ content: msg, ephemeral: false });
-        }
-        return refreshPanel(interaction, cfg, owner);
-      }
-
-      case B.DASHBOARD: {
-        await interaction.reply({
+      case B.DASHBOARD:
+        return interaction.reply({
           embeds: [buildDashboardEmbed(cfg, data)],
           ephemeral: false,
         });
-        return;
+
+      // ── Top Photo ────────────────────────────────────────────────────────────
+      case B.TOP_PHOTO: {
+        if (!cfg.watchChannelId) {
+          return interaction.reply({
+            content: "❌ لم يتم تحديد قناة المشاهدة.",
+            ephemeral: false,
+          });
+        }
+        if (!cfg.notifyChannelId) {
+          return interaction.reply({
+            content: "❌ لم يتم تحديد قناة الإشعارات (مطلوبة للمعاينة).",
+            ephemeral: false,
+          });
+        }
+
+        await interaction.deferReply({ ephemeral: false });
+
+        try {
+          const ch = getChannel(data, cfg.watchChannelId);
+          const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+
+          // Sort by unique reactors descending, last 7 days only
+          const candidates = Object.entries(ch.messages)
+            .filter(
+              ([, m]) => m.postedAt >= sevenDaysAgo && m.reactorIds.length > 0,
+            )
+            .sort(([, a], [, b]) => b.reactorIds.length - a.reactorIds.length);
+
+          if (candidates.length === 0) {
+            return interaction.editReply({
+              content: "❌ لا توجد صور تفاعل عليها أحد خلال آخر 7 أيام.",
+            });
+          }
+
+          const [watchCh, notifyCh] = await Promise.all([
+            client.channels.fetch(cfg.watchChannelId).catch(() => null),
+            client.channels.fetch(cfg.notifyChannelId).catch(() => null),
+          ]);
+
+          if (!watchCh)
+            return interaction.editReply({
+              content: "❌ تعذّر الوصول إلى قناة المشاهدة.",
+            });
+          if (!notifyCh)
+            return interaction.editReply({
+              content: "❌ تعذّر الوصول إلى قناة الإشعارات.",
+            });
+
+          // Walk candidates until we find one with a live, fetchable image
+          const found = await findTopPhoto(candidates, watchCh);
+
+          if (!found) {
+            return interaction.editReply({
+              content: "❌ لم أتمكن من العثور على صورة صالحة خلال آخر 7 أيام.",
+            });
+          }
+
+          const { meta, url, totalReactions } = found;
+          const authorId = meta.authorId;
+
+          // Derive a clean filename from the URL (strip query params)
+          const filename =
+            url.split("/").pop()?.split("?")[0] || "top-photo.jpg";
+
+          // Text only — image is sent as a real file attachment so it always renders
+          const msgText = [
+            `🏆 **أفضل صورة خلال آخر 7 أيام!**`,
+            ``,
+            `صاحب الصورة ${authorId ? `<@${authorId}>` : "غير معروف"}، وقد حققت ${totalReactions} تفاعل ❤️`,
+            ``,
+            `@here`,
+          ].join("\n");
+
+          const confirmRow = new ActionRowBuilder().addComponents(
+            btn("confirm_top", "✅ إرسال", ButtonStyle.Success),
+            btn("cancel_top", "❌ إلغاء", ButtonStyle.Danger),
+          );
+
+          // Preview: identical to the final send, just with buttons attached
+          const previewMsg = await notifyCh.send({
+            content: msgText,
+            files: [new AttachmentBuilder(url, { name: filename })],
+            components: [confirmRow],
+          });
+
+          await interaction.editReply({
+            content: `📨 تم إرسال المعاينة في <#${cfg.notifyChannelId}> — وافق أو ارفض من هناك.`,
+          });
+
+          // ── Collect the approve / cancel click ──────────────────────────────
+          previewMsg
+            .awaitMessageComponent({
+              filter: (i) =>
+                (i.customId === "confirm_top" || i.customId === "cancel_top") &&
+                isAllowed(cfg, i.user.id),
+              time: 120_000,
+            })
+            .then(async (i) => {
+              if (i.customId === "confirm_top") {
+                // Re-upload the image — can't reuse the attachment from the preview message
+                await watchCh.send({
+                  content: msgText,
+                  files: [new AttachmentBuilder(url, { name: filename })],
+                  allowedMentions: { parse: ["everyone"] },
+                });
+                await i.update({
+                  content: msgText + `\n\n✅ **تم الإرسال.**`,
+                  components: [],
+                });
+              } else {
+                await i.update({
+                  content: msgText + `\n\n❌ **تم الإلغاء.**`,
+                  components: [],
+                });
+              }
+            })
+            .catch(async () => {
+              await previewMsg
+                .edit({
+                  content: msgText + `\n\n⏱️ **انتهت مهلة الموافقة.**`,
+                  components: [],
+                })
+                .catch(() => null);
+            });
+
+          return; // collector runs async — we're done here
+        } catch (err) {
+          console.error("[top-photo]", err);
+          return interaction.editReply({
+            content: "❌ حدث خطأ غير متوقع أثناء البحث عن الصورة.",
+          });
+        }
       }
 
-      // ── Mods (owner only) ──────────────────────────────────────────────────
       case B.MOD_ADD:
         if (!owner)
           return interaction.reply({
-            content: "⛔ هذا الخيار للمالك فقط.",
+            content: "Only the owner can do this.",
             ephemeral: false,
           });
         return interaction.showModal(
-          modal(
-            M.MOD_ADD,
-            "إضافة مشرف",
-            "معرّف المستخدم (User ID)",
-            "مثال: 1234567890123456789",
-            17,
-            20,
-          ),
+          modal(M.MOD_ADD, "Add Mod", "User ID", "123456789012345678", 17, 20),
         );
 
       case B.MOD_REMOVE:
         if (!owner)
           return interaction.reply({
-            content: "⛔ هذا الخيار للمالك فقط.",
+            content: "Only the owner can do this.",
             ephemeral: false,
           });
         return interaction.showModal(
           modal(
             M.MOD_REMOVE,
-            "إزالة مشرف",
-            "معرّف المستخدم (User ID)",
-            "مثال: 1234567890123456789",
+            "Remove Mod",
+            "User ID",
+            "123456789012345678",
             17,
             20,
           ),
@@ -635,39 +497,37 @@ async function handleSettingsInteraction(
       case B.MOD_LIST: {
         if (!owner)
           return interaction.reply({
-            content: "⛔ هذا الخيار للمالك فقط.",
+            content: "Only the owner can do this.",
             ephemeral: false,
           });
         const list = cfg.modIds.length
-          ? cfg.modIds
-              .map((id, i) => `${i + 1}. <@${id}> — \`${id}\``)
-              .join("\n")
-          : "لا يوجد مشرفون حالياً.";
+          ? cfg.modIds.map((id) => `<@${id}>`).join(", ")
+          : "None";
         return interaction.reply({
-          content: `👥 **قائمة المشرفين:**\n${list}`,
+          content: `Mods: ${list}`,
           ephemeral: false,
         });
       }
     }
   }
 
-  // ── MODAL SUBMITS ──────────────────────────────────────────────────────────
+  // ── Modals ─────────────────────────────────────────────────────────────────
+
   if (interaction.type === InteractionType.ModalSubmit) {
     const val = interaction.fields.getTextInputValue(F).trim();
 
     switch (interaction.customId) {
-      // ── Channel modals ──────────────────────────────────────────────────────
       case M.WATCH: {
         const channel = await resolveChannel(interaction, client, val);
         if (!channel) return;
         cfg.watchChannelId = channel.id;
         saveConfig(cfg);
         await interaction.reply({
-          content: `✅ تم تعيين قناة المراقبة على <#${channel.id}>.\n> جارٍ مزامنة البيانات في الخلفية…`,
+          content: "Watch channel updated. Sync started.",
           ephemeral: false,
         });
         syncChannel(channel, data, cfg).catch((e) =>
-          console.error("[sync error]", e),
+          console.error("[sync]", e),
         );
         break;
       }
@@ -678,151 +538,76 @@ async function handleSettingsInteraction(
         cfg.notifyChannelId = channel.id;
         saveConfig(cfg);
         await interaction.reply({
-          content: `✅ تم تعيين قناة الإشعارات على <#${channel.id}>.`,
+          content: "Notify channel updated.",
           ephemeral: false,
         });
         break;
       }
 
-      // ── Number modals ───────────────────────────────────────────────────────
       case M.THRESHOLD: {
         const n = parseInt(val, 10);
-        if (!Number.isInteger(n) || n < 1)
+        if (!Number.isInteger(n) || n < 1) {
           return interaction.reply({
-            content: "❌ أدخل رقماً صحيحاً أكبر من صفر.",
+            content: "Goal must be a positive number.",
             ephemeral: false,
           });
-
-        const old = cfg.reactionThreshold;
+        }
         cfg.reactionThreshold = n;
         saveConfig(cfg);
-
-        let note = "";
-        if (cfg.watchChannelId && n < old) {
-          // New goal is lower → reset current-cycle progress to prevent instant wins.
-          const ch = getChannel(data, cfg.watchChannelId);
-          for (const u of Object.values(ch.users)) {
-            u.pending = [];
-            u.points = 0;
-          }
-          saveData(data);
-          note =
-            "\n> ⚠️ الهدف الجديد أصغر — تم إعادة ضبط التقدم الحالي لجميع المستخدمين.";
-        }
-        await interaction.reply({
-          content: `✅ تم تعيين الهدف على **${n}** نقطة.${note}`,
-          ephemeral: false,
-        });
+        await interaction.reply({ content: "Goal updated.", ephemeral: false });
         break;
       }
 
-      case M.SPEED: {
-        const n = parseInt(val, 10);
-        if (!Number.isInteger(n) || n < 1 || n > 1440)
-          return interaction.reply({
-            content: "❌ أدخل عدداً بين 1 و 1440 دقيقة.",
-            ephemeral: false,
-          });
-        cfg.speedBonusMinutes = n;
-        saveConfig(cfg);
-        await interaction.reply({
-          content: `✅ نافذة التفاعل السريع: **${n}** دقيقة.`,
-          ephemeral: false,
-        });
-        break;
-      }
-
-      case M.INTERVAL: {
-        const n = parseInt(val, 10);
-        if (!Number.isInteger(n) || n < 1 || n > 365)
-          return interaction.reply({
-            content: "❌ أدخل عدداً بين 1 و 365.",
-            ephemeral: false,
-          });
-        cfg.intervalDays = n;
-        cfg.lastAnnouncedAt = Date.now(); // reset timer from now
-        saveConfig(cfg);
-        await interaction.reply({
-          content: `✅ سيتم نشر إعلان أفضل صورة كل **${n}** يوم.\n> تم إعادة ضبط المؤقّت.`,
-          ephemeral: false,
-        });
-        break;
-      }
-
-      case M.RETENTION: {
-        const n = parseInt(val, 10);
-        if (!Number.isInteger(n) || n < 1 || n > 365)
-          return interaction.reply({
-            content: "❌ أدخل عدداً بين 1 و 365.",
-            ephemeral: false,
-          });
-        cfg.retentionDays = n;
-        saveConfig(cfg);
-        await interaction.reply({
-          content: `✅ مدة حفظ البيانات: **${n}** يوم.`,
-          ephemeral: false,
-        });
-        break;
-      }
-
-      // ── Mod modals ──────────────────────────────────────────────────────────
       case M.MOD_ADD: {
         if (!owner)
           return interaction.reply({
-            content: "⛔ هذا الخيار للمالك فقط.",
+            content: "Only the owner can do this.",
             ephemeral: false,
           });
         if (!SNOWFLAKE_RE.test(val))
           return interaction.reply({
-            content: "❌ معرّف المستخدم غير صالح.",
+            content: "Invalid user ID.",
             ephemeral: false,
           });
         if (val === cfg.ownerId)
           return interaction.reply({
-            content: "❌ المالك لا يحتاج إلى إضافته كمشرف.",
+            content: "Owner cannot be added as mod.",
             ephemeral: false,
           });
         if (cfg.modIds.includes(val))
           return interaction.reply({
-            content: "⚠️ هذا المستخدم مشرف بالفعل.",
+            content: "User is already a mod.",
             ephemeral: false,
           });
         cfg.modIds.push(val);
         saveConfig(cfg);
-        await interaction.reply({
-          content: `✅ تمت إضافة <@${val}> كمشرف.`,
-          ephemeral: false,
-        });
+        await interaction.reply({ content: "Mod added.", ephemeral: false });
         break;
       }
 
       case M.MOD_REMOVE: {
         if (!owner)
           return interaction.reply({
-            content: "⛔ هذا الخيار للمالك فقط.",
+            content: "Only the owner can do this.",
             ephemeral: false,
           });
         if (!SNOWFLAKE_RE.test(val))
           return interaction.reply({
-            content: "❌ معرّف المستخدم غير صالح.",
+            content: "Invalid user ID.",
             ephemeral: false,
           });
         if (!cfg.modIds.includes(val))
           return interaction.reply({
-            content: "⚠️ هذا المستخدم ليس مشرفاً.",
+            content: "User is not a mod.",
             ephemeral: false,
           });
         cfg.modIds = cfg.modIds.filter((id) => id !== val);
         saveConfig(cfg);
-        await interaction.reply({
-          content: `✅ تمت إزالة <@${val}> من قائمة المشرفين.`,
-          ephemeral: false,
-        });
+        await interaction.reply({ content: "Mod removed.", ephemeral: false });
         break;
       }
     }
 
-    // Refresh embed after every modal submit.
     await refreshPanel(interaction, cfg, owner);
   }
 }

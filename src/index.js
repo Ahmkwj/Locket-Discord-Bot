@@ -26,11 +26,6 @@ const {
   saveData,
   isAllowed,
 } = require("./storage");
-const {
-  checkDuplicatePhoto,
-  registerPhotoSignatures,
-  handleDuplicatePhoto,
-} = require("./duplicates");
 const { onReactionAdd } = require("./reactions");
 const { syncChannel } = require("./sync");
 const {
@@ -119,18 +114,6 @@ client.on("messageReactionAdd", async (reaction, user) => {
 client.on("messageCreate", async (message) => {
   try {
     if (message.author.bot) return;
-
-    const isWatchChannel =
-      config.watchChannelId && message.channel.id === config.watchChannelId;
-
-    // ── Duplicate photo guard ──────────────────────────────────────────────
-    if (isWatchChannel && message.attachments.size > 0) {
-      if (checkDuplicatePhoto(message, config, data, saveData)) {
-        await handleDuplicatePhoto(message, client, config);
-        return; // Don't process this message further
-      }
-      registerPhotoSignatures(message, config, data, saveData);
-    }
 
     // ── Admin commands ─────────────────────────────────────────────────────
     if (!isAllowed(config, message.author.id)) return;
